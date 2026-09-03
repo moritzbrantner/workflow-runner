@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Interactive companion for the workflow-runner execution contract." />
+  <title>workflow-runner</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">workflow stack / execution runtime</p>
+        <h1>workflow-runner</h1>
+        <p class="lede">Execute one compiled typed DAG deterministically, with pluggable node executors, branch propagation, retries, cancellation, and lifecycle events.</p>
+      </div>
+      <div class="boundary-card">
+        <span>owns</span>
+        <strong>execution</strong>
+        <small>not authoring · not scheduling · not orchestration</small>
+      </div>
+    </header>
+
+    <section class="flow" aria-labelledby="flow-title">
+      <div class="section-heading">
+        <p class="eyebrow">runtime boundary</p>
+        <h2 id="flow-title">One run, end to end</h2>
+      </div>
+      <div class="flow-grid">
+        <article class="stage"><span>01</span><h3>Compiled DAG</h3><p><code>@moritzbrantner/workflow/compiled</code> v1</p></article>
+        <div class="arrow">→</div>
+        <article class="stage"><span>02</span><h3>Validate order</h3><p>Deterministic execution sequence</p></article>
+        <div class="arrow">→</div>
+        <article class="stage active"><span>03</span><h3>Dispatch nodes</h3><p>Built-ins + host executors</p></article>
+        <div class="arrow">→</div>
+        <article class="stage"><span>04</span><h3>Run result</h3><p>Output, node results, events</p></article>
+      </div>
+    </section>
+
+    <section class="lab" aria-labelledby="lab-title">
+      <div class="section-heading">
+        <p class="eyebrow">interactive contract demo</p>
+        <h2 id="lab-title">Branch + retry simulator</h2>
+        <p>This browser demo visualizes runner semantics. It does not execute production runner code.</p>
+      </div>
+
+      <div class="controls">
+        <label>
+          Branch condition
+          <select id="condition">
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        </label>
+        <label>
+          Flaky executor
+          <select id="flaky">
+            <option value="retry">fail once, then succeed</option>
+            <option value="success">succeed immediately</option>
+            <option value="fail">fail every attempt</option>
+          </select>
+        </label>
+        <button id="run-button" type="button">Run workflow</button>
+      </div>
+
+      <div class="runtime-grid">
+        <div class="dag" id="dag" aria-label="Workflow DAG">
+          <div class="node" data-node="start"><span>control.start</span><strong>start</strong><small>pending</small></div>
+          <div class="connector"></div>
+          <div class="node" data-node="if"><span>control.if</span><strong>branch</strong><small>pending</small></div>
+          <div class="branch-row">
+            <div class="node" data-node="yes"><span>true</span><strong>yes</strong><small>pending</small></div>
+            <div class="node" data-node="no"><span>false</span><strong>no</strong><small>pending</small></div>
+          </div>
+          <div class="connector"></div>
+          <div class="node" data-node="flaky"><span>custom.flaky</span><strong>work</strong><small>pending</small></div>
+          <div class="connector"></div>
+          <div class="node" data-node="end"><span>control.end</span><strong>end</strong><small>pending</small></div>
+        </div>
+
+        <aside class="event-panel">
+          <div class="event-header"><h3>Lifecycle events</h3><span id="run-status">idle</span></div>
+          <ol id="events"><li class="muted">Run the workflow to inspect its event stream.</li></ol>
+        </aside>
+      </div>
+    </section>
+
+    <section class="capabilities">
+      <div class="section-heading"><p class="eyebrow">contract surface</p><h2>What the runner owns</h2></div>
+      <div class="cards">
+        <article><h3>Deterministic DAG execution</h3><p>Consumes a precompiled order and executes nodes for exactly one run.</p></article>
+        <article><h3>Executor registry</h3><p>Built-in control/JSON primitives stay small; domain behavior is host-pluggable.</p></article>
+        <article><h3>Branch propagation</h3><p>Inactive output ports suppress downstream execution; nodes with only inactive inputs are skipped.</p></article>
+        <article><h3>Retries + cancellation</h3><p>Attempts and abort signals are runtime concerns, surfaced through structured results and events.</p></article>
+      </div>
+    </section>
+
+    <section class="not-owned">
+      <div><p class="eyebrow">explicit non-goals</p><h2>What belongs elsewhere</h2></div>
+      <ul>
+        <li>workflow authoring and compilation → <strong>workflow-editor</strong></li>
+        <li>registration, versions, triggers, cron/webhooks → <strong>workflow-engine</strong></li>
+        <li>persistent queues and distributed workers → later orchestration infrastructure</li>
+      </ul>
+    </section>
+
+    <footer>
+      <span>workflow-runner</span>
+      <a href="https://github.com/moritzbrantner/workflow-runner">GitHub repository ↗</a>
+    </footer>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

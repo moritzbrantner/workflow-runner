@@ -1,0 +1,52 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check static site
+        run: |
+          test -f web/index.html
+          test -f web/styles.css
+          test -f web/app.js
+          node --check web/app.js
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: verify
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
