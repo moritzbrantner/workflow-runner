@@ -1,0 +1,50 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "label": "Start",
+      "kind": "control.start",
+      "outputs": [
+        {
+          "id": "out",
+          "type": {
+            "kind": "any"
+          }
+        }
+      ]
+    },
+    {
+      "id": "end",
+      "label": "End",
+      "kind": "control.end",
+      "inputs": [
+        {
+          "id": "in",
+          "type": {
+            "kind": "string"
+          },
+          "optional": true,
+          "defaultValue": "fallback"
+        }
+      ],
+      "data": {
+        "result": "complete"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge",
+      "sourceNodeId": "start",
+      "sourcePortId": "out",
+      "targetNodeId": "end",
+      "targetPortId": "in"
+    }
+  ],
+  "order": [
+    "start",
+    "end"
+  ]
+}
