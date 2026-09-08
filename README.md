@@ -25,6 +25,10 @@ const result = await runner.dispatch({
 });
 ```
 
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for the next execution/runtime slices and boundary constraints.
+
 ## Development
 
 ```sh
