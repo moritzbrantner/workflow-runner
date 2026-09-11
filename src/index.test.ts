@@ -111,3 +111,59 @@ test("fails when no executor is registered", async () => {
   assert.equal(result.status, "failed");
   if (result.status === "failed") assert.equal(result.error.code, "missing-executor");
 });
+
+test("json.array preserves compiled input-port order and default items", async () => {
+  const runner = createWorkflowRunner();
+  const workflow: ExecutableWorkflow = {
+    format: "@moritzbrantner/workflow/compiled",
+    version: 1,
+    nodes: [
+      { id: "one", kind: "json.number", outputs: [{ id: "value" }], data: { value: 1 } },
+      { id: "two", kind: "json.number", outputs: [{ id: "value" }], data: { value: 2 } },
+      {
+        id: "array",
+        kind: "json.array",
+        inputs: [
+          { id: "second" },
+          { id: "first" },
+          { id: "literal", defaultValue: "tail" },
+          { id: "item-add", optional: true },
+        ],
+        outputs: [{ id: "value" }],
+      },
+      { id: "end", kind: "control.end", inputs: [{ id: "in" }] },
+    ],
+    edges: [
+      {
+        id: "e-one",
+        sourceNodeId: "one",
+        sourcePortId: "value",
+        targetNodeId: "array",
+        targetPortId: "first",
+      },
+      {
+        id: "e-two",
+        sourceNodeId: "two",
+        sourcePortId: "value",
+        targetNodeId: "array",
+        targetPortId: "second",
+      },
+      {
+        id: "e-end",
+        sourceNodeId: "array",
+        sourcePortId: "value",
+        targetNodeId: "end",
+        targetPortId: "in",
+      },
+    ],
+    order: ["one", "two", "array", "end"],
+  };
+
+  const result = await runner.dispatch({ runId: "run-array", workflow });
+  assert.equal(result.status, "succeeded");
+  if (result.status !== "succeeded") return;
+  assert.deepEqual(result.output, [2, 1, "tail"]);
+  assert.deepEqual(result.nodeResults.array?.status === "succeeded" ? result.nodeResults.array.outputs : {}, {
+    value: [2, 1, "tail"],
+  });
+});
