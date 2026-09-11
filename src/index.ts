@@ -268,6 +268,15 @@ function resolveRunOutput(
   );
 }
 
+function orderedArrayInputs(
+  node: ExecutableWorkflowNode,
+  inputs: Readonly<Record<string, unknown>>,
+): unknown[] {
+  return (node.inputs ?? [])
+    .filter((port) => port.id !== "item-add" && hasOwn(inputs, port.id))
+    .map((port) => inputs[port.id]);
+}
+
 function createBuiltInExecutors(): Record<string, WorkflowNodeExecutor> {
   return {
     "control.start": ({ workflowInput }) => ({ outputs: { out: workflowInput } }),
@@ -287,6 +296,7 @@ function createBuiltInExecutors(): Record<string, WorkflowNodeExecutor> {
     "json.number": ({ node }) => ({ outputs: { value: node.data?.value ?? 0 } }),
     "json.boolean": ({ node }) => ({ outputs: { value: node.data?.value ?? false } }),
     "json.null": () => ({ outputs: { value: null } }),
+    "json.array": ({ node, inputs }) => ({ outputs: { value: orderedArrayInputs(node, inputs) } }),
   };
 }
 
