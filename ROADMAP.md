@@ -4,36 +4,37 @@ The workflow runner executes exactly one compiled workflow. It owns execution va
 
 ## P0 — Compiled workflow conformance
 
-Status: the MVP accepts `@moritzbrantner/workflow/compiled` version 1 and the cross-repository conformance fixture pins the current editor → runner handoff.
+Status: implemented.
 
-Next slice:
-
-- validate runtime values rather than trusting TypeScript shapes;
-- return stable diagnostics for malformed arrays/objects, duplicate ids, missing nodes or ports, invalid order, and unsupported format/version;
+- validate serialized runtime values rather than trusting TypeScript shapes;
+- return stable diagnostics for malformed arrays/objects, duplicate ids/connections, missing nodes or ports, invalid order/cardinality, and unsupported format/version;
 - reject invalid workflows before any executor is invoked;
 - keep validation deterministic and side-effect free;
-- preserve editor-owned port type/cardinality metadata even when the runner does not yet interpret all of it.
+- require and preserve editor-owned port type/cardinality metadata without re-owning type compatibility.
+
+Conformance remains pinned by the editor-produced compiled-v1 fixture.
 
 Related: #2.
 
 ## P0 — Define data-flow and cardinality semantics
 
-The compiler now preserves workflow port cardinality, while the runner currently resolves inputs as one value per target port.
+Status: implemented.
 
-Next slice:
-
-- define runtime behavior for `single`, `many`, and bounded cardinality;
-- reject ambiguous fan-in instead of silently overwriting a target input;
-- define deterministic ordering for multi-value inputs;
-- fail execution readiness when required inputs or minimum cardinality are not satisfied;
-- keep type compatibility an authoring/compiler concern unless runtime validation is explicitly required by an executor.
+- undeclared ordinary inputs retain single-value fan-in and ambiguous fan-in is rejected;
+- `cardinality.max: null` or `max > 1` opts an input into array aggregation;
+- multi-value inputs use deterministic compiled edge-id ordering;
+- declared minimum cardinality and required inputs are checked against active runtime values before executor dispatch;
+- defaults apply only when no active value is present;
+- type compatibility remains an authoring/compiler concern.
 
 ## P0 — Retry, timeout, and cancellation policy
 
-- make retries opt-in by node/executor policy rather than retrying every failure indiscriminately;
+Next slice:
+
+- make retries opt-in by executor policy rather than retrying every failure indiscriminately;
 - distinguish transient from permanent failures;
 - add per-node execution timeouts and deterministic cancellation behavior;
-- ensure cancelled/failed attempts release executor-owned resources;
+- ensure cancelled/failed attempts release executor-owned resources through an explicit lifecycle boundary;
 - specify lifecycle events for timeout, retry exhaustion, and cancellation races.
 
 ## P1 — Deterministic parallel stages
