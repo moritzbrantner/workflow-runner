@@ -1,0 +1,11 @@
+# Workflow Runner technical decisions
+
+This document records owner-approved technical choices. Workflow Editor's Decision Atlas owns product intent; Workflow Runner owns one-run execution, never authoring or orchestration.
+
+## TECH-004 — Bounded per-consumer stream queues and slowest-consumer backpressure
+
+- **Status:** approved 2026-10-16; owner selected option A. Implementation tracked by [#12](https://github.com/moritzbrantner/workflow-runner/issues/12).
+- **Decision:** For an output with multiple active streamed consumers, the runner delivers each chunk in order to each consumer via an independently bounded per-consumer queue. Production cannot advance past the configured capacity of **any active consumer**: the slowest active consumer imposes backpressure on the upstream producer. Do not silently drop, reorder, replay or eagerly buffer an unbounded stream; do not require a user-authored Tee node or rerun the producer per consumer.
+- **Lifecycle:** Register active consumers before producer delivery; handle completion, consumer cancellation, failure and upstream cancellation by releasing queue capacity and waking blocked producer/consumer operations. No blocked operations may leak after a run ends. Bound queue capacity by explicit resource limits and preserve cancellation responsiveness. Any decisions about concrete numeric queue sizes, failure policy and resource budgets require representative tests rather than invented product defaults.
+- **Authority:** Workflow Editor owns static TypeScript payload compatibility and orthogonal buffered/streamed port metadata (TECH-003). Runner owns actual chunk fan-out, queue lifecycle, ordering and backpressure. Workflow Engine owns durable run state and dispatch and may persist only JSON-safe references/metadata, not raw binary chunks or live streams. Preserve existing compiled-v1 JSON-only runs.
+- **Acceptance:** Use the actual compiled contract to run one producer and two differently paced consumers; verify exact ordered byte delivery to both, single producer execution, bounded queue occupancy and producer suspension, early cancellation/error cleanup, and producer/consumer overlap without stage deadlock. Verify buffered behavior and compiled-v1 compatibility. This decision does not claim the feature has shipped.
