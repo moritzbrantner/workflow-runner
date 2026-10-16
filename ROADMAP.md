@@ -71,3 +71,9 @@ Next slice:
 - Workflow registration, triggers, scheduling, and run-record persistence belong to `workflow-engine`.
 - Workflow authoring and compilation belong to `workflow-editor`.
 - Queue ownership and distributed orchestration remain outside runner core.
+
+## Cross-repository ComfyUI execution reference
+
+The owner's ComfyUI-first [asset-tooling decision](https://github.com/moritzbrantner/asset-tooling/blob/main/docs/decisions/atlas.md) keeps native ComfyUI media graphs, their inference, queue, cache and internal node execution inside ComfyUI. The asset-tooling/host adapter exposes an entire ComfyUI workflow as **one registered external node executor**, through the same compiled-workflow and `AssetRef` contracts as other operations. There is no ComfyUI-specific scheduler, graph interpreter or model-node registry in runner core.
+
+The runner still owns generic dispatch, node lifecycle, cancellation, timeout, failure classification, and conservative retry/idempotence at this external-job boundary ([#8](https://github.com/moritzbrantner/workflow-runner/issues/8)). Inference transport must not blindly retry an ambiguous submitted job or globally interrupt an unrelated ComfyUI job. When binary results are exchanged, follow the agreed buffered/streamed boundary ([#12](https://github.com/moritzbrantner/workflow-runner/issues/12)) instead of persisting raw binary through workflow-engine. Future internal asset-tooling providers share the same operation-facing execution contract rather than requiring a parallel runner.
