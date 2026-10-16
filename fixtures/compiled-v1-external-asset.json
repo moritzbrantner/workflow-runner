@@ -1,0 +1,89 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "label": "Start",
+      "kind": "control.start",
+      "outputs": [
+        {
+          "id": "out",
+          "type": {
+            "kind": "any"
+          }
+        }
+      ]
+    },
+    {
+      "id": "generate",
+      "label": "Generate image",
+      "kind": "asset.operation",
+      "inputs": [
+        {
+          "id": "request",
+          "type": {
+            "kind": "any"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "asset",
+          "type": {
+            "kind": "object"
+          }
+        }
+      ],
+      "data": {
+        "assetOperation": {
+          "id": "image.comfyui.generate",
+          "version": "1",
+          "parameters": {
+            "provider": "comfyui",
+            "workflow": {
+              "schemaVersion": 1,
+              "kind": "workflow",
+              "mediaType": "application/json",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "byteLength": 256,
+              "metadata": {
+                "format": "comfyui-api-prompt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "end",
+      "label": "End",
+      "kind": "control.end",
+      "inputs": [
+        {
+          "id": "in",
+          "type": {
+            "kind": "object"
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "generate-end",
+      "sourceNodeId": "generate",
+      "sourcePortId": "asset",
+      "targetNodeId": "end",
+      "targetPortId": "in"
+    },
+    {
+      "id": "start-generate",
+      "sourceNodeId": "start",
+      "sourcePortId": "out",
+      "targetNodeId": "generate",
+      "targetPortId": "request"
+    }
+  ],
+  "order": ["start", "generate", "end"]
+}
