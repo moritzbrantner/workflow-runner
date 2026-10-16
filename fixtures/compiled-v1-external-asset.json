@@ -85,9 +85,5 @@
       "targetPortId": "request"
     }
   ],
-  "order": [
-    "start",
-    "generate",
-    "end"
-  ]
+  "order": ["start", "generate", "end"]
 }
