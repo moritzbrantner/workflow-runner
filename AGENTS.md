@@ -13,3 +13,7 @@ The runtime contract is the serializable `@moritzbrantner/workflow/compiled` for
 ## Validation
 
 Use `bun run verify` for the canonical repository check. Keep behavior tests colocated with the smallest source scope they exercise.
+
+## ComfyUI external execution
+
+ComfyUI runs the nodes of its own media graphs and owns its inference queue. One ComfyUI workflow is an opaque, host-registered `asset-tooling` executor operation; do not embed a second ComfyUI graph/model runtime or add provider-specific scheduling to runner core. Preserve generic run lifecycle, explicit cancellation/retry safety and typed asset results. See the cross-repository ComfyUI-first direction in `asset-tooling/docs/comfyui-first.md` and runner #8.
