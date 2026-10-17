@@ -37,13 +37,15 @@ Next slice:
 - ensure cancelled/failed attempts release executor-owned resources through an explicit lifecycle boundary;
 - specify lifecycle events for timeout, retry exhaustion, and cancellation races.
 
-## P1 — Deterministic parallel stages
+## P1 — Configurable parallel ready-node execution
 
-- execute dependency-independent nodes concurrently only after the sequential semantics are fully pinned;
-- derive stages from the compiled DAG deterministically;
-- define stable event ordering for equal-time completions;
-- preserve deterministic input aggregation and terminal output selection;
-- keep a sequential mode as a reference/conformance implementation.
+Owner-selected direction: [TECH-012](docs/technical-decisions.md) and [#24](https://github.com/moritzbrantner/workflow-runner/issues/24). This is approved architecture, not completed implementation.
+
+- Execute independent, ready Nodes in parallel by default; never start a dependent Node before its required inputs are available.
+- Use an explicit, validated, bounded worker count with a host default and per-run override. Count `1` retains the sequential reference path.
+- Choose ready starts by stable compiled ordering; real asynchronous completions need not occur in deterministic time order.
+- Preserve fan-in ordering, branch/output semantics, bounded streaming and existing error/cancellation and execution-budget controls.
+- Keep scheduling within the existing Runner, not a second worker service.
 
 ## P1 — Executor lifecycle and isolation
 
