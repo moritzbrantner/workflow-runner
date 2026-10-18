@@ -1,0 +1,234 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 2,
+  "nodes": [
+    {
+      "id": "initial-guess",
+      "label": "Initial guess",
+      "kind": "json.number",
+      "outputs": [
+        {
+          "id": "value",
+          "type": {
+            "kind": "number"
+          }
+        }
+      ],
+      "data": {
+        "value": 1,
+        "sourceName": "numberValue2"
+      }
+    },
+    {
+      "id": "target",
+      "label": "Target",
+      "kind": "json.number",
+      "outputs": [
+        {
+          "id": "value",
+          "type": {
+            "kind": "number"
+          }
+        }
+      ],
+      "data": {
+        "value": 2,
+        "sourceName": "numberValue"
+      }
+    },
+    {
+      "id": "refine",
+      "label": "Refine square root",
+      "kind": "control.iterate",
+      "inputs": [
+        {
+          "id": "state",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        },
+        {
+          "id": "target",
+          "type": {
+            "kind": "number"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "result",
+          "type": {
+            "kind": "typescript",
+            "source": "{ status: \"converged\"; value: number; iterations: number; maxIterations: number; measurements: { estimate: number } } | { status: \"limit-exhausted\"; value: number; iterations: number; maxIterations: number; measurements: { estimate: number } }"
+          }
+        }
+      ],
+      "iteration": {
+        "maxIterations": 10,
+        "state": {
+          "inputPortId": "state",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        },
+        "stop": {
+          "kind": "body-output",
+          "outputId": "converged"
+        },
+        "candidate": "latest-state",
+        "result": {
+          "outputPortId": "result",
+          "statuses": ["converged", "limit-exhausted"]
+        },
+        "body": {
+          "nodes": [
+            {
+              "id": "newton-step",
+              "label": "Newton step",
+              "kind": "math.sqrt.newtonStep",
+              "inputs": [
+                {
+                  "id": "estimate",
+                  "type": {
+                    "kind": "number"
+                  }
+                },
+                {
+                  "id": "target",
+                  "type": {
+                    "kind": "number"
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "id": "next",
+                  "type": {
+                    "kind": "number"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "within-tolerance",
+              "label": "Within tolerance",
+              "kind": "math.compare.withinTolerance",
+              "inputs": [
+                {
+                  "id": "previous",
+                  "type": {
+                    "kind": "number"
+                  }
+                },
+                {
+                  "id": "next",
+                  "type": {
+                    "kind": "number"
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "id": "converged",
+                  "type": {
+                    "kind": "boolean"
+                  }
+                }
+              ],
+              "data": {
+                "tolerance": 1e-9
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "step-next",
+              "sourceNodeId": "newton-step",
+              "sourcePortId": "next",
+              "targetNodeId": "within-tolerance",
+              "targetPortId": "next"
+            }
+          ],
+          "order": ["newton-step", "within-tolerance"],
+          "inputs": [
+            {
+              "id": "state",
+              "nodeId": "newton-step",
+              "portId": "estimate"
+            },
+            {
+              "id": "state",
+              "nodeId": "within-tolerance",
+              "portId": "previous"
+            },
+            {
+              "id": "target",
+              "nodeId": "newton-step",
+              "portId": "target"
+            }
+          ],
+          "outputs": {
+            "next": {
+              "nodeId": "newton-step",
+              "portId": "next"
+            },
+            "converged": {
+              "nodeId": "within-tolerance",
+              "portId": "converged"
+            },
+            "measurements": [
+              {
+                "id": "estimate",
+                "nodeId": "newton-step",
+                "portId": "next",
+                "type": {
+                  "kind": "number"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "approximation",
+      "label": "Approximation",
+      "kind": "control.end",
+      "inputs": [
+        {
+          "id": "in",
+          "type": {
+            "kind": "typescript",
+            "source": "unknown"
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "guess-state",
+      "sourceNodeId": "initial-guess",
+      "sourcePortId": "value",
+      "targetNodeId": "refine",
+      "targetPortId": "state"
+    },
+    {
+      "id": "refine-approximation",
+      "sourceNodeId": "refine",
+      "sourcePortId": "result",
+      "targetNodeId": "approximation",
+      "targetPortId": "in"
+    },
+    {
+      "id": "target-invariant",
+      "sourceNodeId": "target",
+      "sourcePortId": "value",
+      "targetNodeId": "refine",
+      "targetPortId": "target"
+    }
+  ],
+  "order": ["initial-guess", "target", "refine", "approximation"]
+}

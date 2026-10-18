@@ -16,6 +16,7 @@ import {
 import { isAsyncIterable, StreamBroadcast, summarizeOutputs } from "./stream.js";
 import {
   type ExecutableWorkflow,
+  type ExecutableWorkflowDefinition,
   type ExecutableWorkflowEdge,
   type ExecutableWorkflowIteration,
   type ExecutableWorkflowIterationBoundary,
@@ -271,6 +272,10 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
     };
     /** Pre-completed node results injected into a nested graph (iteration boundary values). */
     seed?: Record<string, WorkflowNodeResult>;
+    /** Version-3 closure of the root workflow, shared by every nested reference run. */
+    workflows?: Record<string, ExecutableWorkflowDefinition>;
+    /** Workflow keys of the active reference invocations, outermost first. */
+    callStack?: readonly string[];
   };
 
   const run = async (
@@ -711,6 +716,8 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         timestamp: timestamp(),
       });
       let state = inputs.state;
+      /** The last completed iteration's measurements (TECH-004); never a quality metric. */
+      const measurements: Record<string, unknown> = {};
       let status: "converged" | "limit-exhausted" = "limit-exhausted";
       let iterations = 0;
       const seedNodeId = "@iteration-input";
@@ -757,6 +764,8 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           },
           {
             budget: shared.budget,
+            ...(shared.workflows ? { workflows: shared.workflows } : {}),
+            ...(shared.callStack ? { callStack: shared.callStack } : {}),
             persistence: {
               workflowDigest:
                 shared.persistence?.workflowDigest ?? digestExecutableWorkflow(workflow),
@@ -822,6 +831,14 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         }
         iterations += 1;
         state = next.value;
+        for (const measurement of body.outputs.measurements ?? []) {
+          const measured = read(measurement);
+          if (measured) {
+            measurements[measurement.id] = measured.value;
+          } else {
+            delete measurements[measurement.id];
+          }
+        }
         const converged =
           iteration.stop.kind === "body-output" && read(body.outputs.converged)?.value === true;
         emit({
@@ -844,6 +861,7 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           value: state,
           iterations,
           maxIterations: iteration.maxIterations,
+          ...(iteration.body.outputs.measurements ? { measurements } : {}),
         },
       };
       const succeeded = { status: "succeeded" as const, attempts: 1, inputs, outputs };
@@ -859,6 +877,149 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         attempt: 1,
         timestamp: timestamp(),
         outputs,
+      });
+      return { kind: "succeeded" };
+    };
+
+    /**
+     * Runs a version-3 Workflow Reference (editor TECH-005): the node's inputs feed the referenced
+     * definition's interface inputs and its interface outputs become the node's outputs. maxDepth
+     * bounds how many invocations of that definition may be nested (the outermost counts as 1).
+     */
+    const executeReference = async (
+      node: ExecutableWorkflowNode,
+      reference: NonNullable<ExecutableWorkflowNode["workflowRef"]>,
+      inputs: Record<string, unknown>,
+    ): Promise<NodeOutcome> => {
+      const nodeId = node.id;
+      const finish = (error: WorkflowRunError): NodeOutcome => {
+        nodeResults[nodeId] = { status: "failed", attempts: 1, inputs, outputs: {}, error };
+        emit({
+          type: "node.failed",
+          runId: request.runId,
+          nodeId,
+          attempt: 1,
+          timestamp: timestamp(),
+          error,
+        });
+        return error.code === "node-cancelled" ? { kind: "cancelled" } : { kind: "failed", error };
+      };
+      const workflows = shared.workflows ?? workflow.workflows ?? {};
+      const definition = workflows[reference.workflow];
+      const callStack = shared.callStack ?? [];
+      const depth = callStack.filter((key) => key === reference.workflow).length + 1;
+      if (!definition) {
+        return finish(
+          fail("node-failed", `Workflow ${reference.workflow} is not in the compiled closure.`, {
+            nodeId,
+          }),
+        );
+      }
+      if (reference.maxDepth !== undefined && depth > reference.maxDepth) {
+        return finish(
+          fail(
+            "reference-depth-exhausted",
+            `Node ${nodeId} would nest ${reference.workflow} ${depth} deep; maxDepth is ${reference.maxDepth}.`,
+            { nodeId },
+          ),
+        );
+      }
+      emit({
+        type: "node.started",
+        runId: request.runId,
+        nodeId,
+        attempt: 1,
+        timestamp: timestamp(),
+      });
+      const seed: Record<string, WorkflowNodeResult> = {};
+      for (const port of definition.interface.inputs) {
+        if (!hasOwn(inputs, port.id)) {
+          continue;
+        }
+        const entry = seed[port.nodeId] ?? {
+          status: "succeeded" as const,
+          attempts: 0,
+          inputs: {},
+          outputs: {},
+        };
+        (entry.outputs as Record<string, unknown>)[port.portId] = inputs[port.id];
+        seed[port.nodeId] = entry;
+      }
+      const result = await run(
+        {
+          runId: request.runId,
+          workflow: {
+            format: workflow.format,
+            version: 3,
+            nodes: definition.nodes,
+            edges: definition.edges,
+            order: definition.order,
+            workflows,
+          },
+          ...(request.input ? { input: request.input } : {}),
+          ...(request.context ? { context: request.context } : {}),
+          signal: runSignal,
+          maxWorkers,
+          ...(request.persistNodeResult ? { persistNodeResult: request.persistNodeResult } : {}),
+        },
+        {
+          budget: shared.budget,
+          workflows,
+          callStack: [...callStack, reference.workflow],
+          seed,
+          persistence: shared.persistence ?? {
+            workflowDigest: digestExecutableWorkflow(workflow),
+            inputDigest: runInputDigest(request),
+          },
+        },
+      );
+      if (result.status === "cancelled") {
+        return finish(fail("node-cancelled", `Node ${nodeId} was cancelled.`, { nodeId }));
+      }
+      if (result.status === "suspended") {
+        return finish(
+          fail(
+            "node-failed",
+            `Node ${nodeId}: suspension inside a referenced workflow is not supported.`,
+            {
+              nodeId,
+            },
+          ),
+        );
+      }
+      if (result.status === "failed") {
+        const passThrough = ["reference-depth-exhausted", "budget-exhausted"] as const;
+        const code = (passThrough as readonly string[]).includes(result.error.code)
+          ? result.error.code
+          : "node-failed";
+        return finish(
+          fail(code, `Node ${nodeId} (${reference.workflow}) failed: ${result.error.message}`, {
+            nodeId,
+            attempt: 1,
+            cause: result.error,
+          }),
+        );
+      }
+      const outputs: Record<string, unknown> = {};
+      for (const port of definition.interface.outputs) {
+        const end = result.nodeResults[port.nodeId];
+        if (end?.status === "succeeded" && hasOwn(end.inputs, port.portId)) {
+          outputs[port.id] = end.inputs[port.portId];
+        }
+      }
+      const succeeded = { status: "succeeded" as const, attempts: 1, inputs, outputs };
+      const persistError = await persistIfRequested(node, succeeded);
+      if (persistError) {
+        return finish(persistError);
+      }
+      nodeResults[nodeId] = succeeded;
+      emit({
+        type: "node.succeeded",
+        runId: request.runId,
+        nodeId,
+        attempt: 1,
+        timestamp: timestamp(),
+        outputs: summarizeOutputs(outputs),
       });
       return { kind: "succeeded" };
     };
@@ -924,6 +1085,10 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         releaseStreams(nodeId).then(() => ({ nodeId, outcome }));
       if (node.kind === "control.iterate" && node.iteration) {
         running.set(nodeId, executeIteration(node, node.iteration, built.inputs).then(finish));
+        return true;
+      }
+      if (node.workflowRef) {
+        running.set(nodeId, executeReference(node, node.workflowRef, built.inputs).then(finish));
         return true;
       }
       const executor = executors.get(node.kind);
@@ -1115,7 +1280,11 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           ],
         });
       }
-      return run(request, { budget: { remaining: budget ?? Number.POSITIVE_INFINITY } });
+      return run(request, {
+        budget: { remaining: budget ?? Number.POSITIVE_INFINITY },
+        ...(request.workflow.workflows ? { workflows: request.workflow.workflows } : {}),
+        callStack: [],
+      });
     },
   };
 }

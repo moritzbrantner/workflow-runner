@@ -11,6 +11,8 @@ const compiledFormat = "@moritzbrantner/workflow/compiled";
 const compiledVersion = 1;
 /** Compiled version that adds bounded iteration (`control.iterate`). */
 const compiledIterationVersion = 2;
+/** Compiled version that adds the Workflow Reference closure (`workflows`, `workflowRef`). */
+const compiledReferenceVersion = 3;
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -569,7 +571,7 @@ function validateIteration(
     // An opaque control.iterate kind without the construct stays an ordinary host executor node.
     return;
   }
-  if (version !== compiledIterationVersion) {
+  if (version !== compiledIterationVersion && version !== compiledReferenceVersion) {
     invalid(".iteration", "Bounded iteration requires compiled workflow version 2.");
     return;
   }
@@ -691,12 +693,208 @@ function validateIteration(
     return;
   }
   boundary(body.outputs.next, ".iteration.body.outputs.next", "outputs");
+  if (body.outputs.measurements !== undefined) {
+    if (!Array.isArray(body.outputs.measurements)) {
+      invalid(".iteration.body.outputs.measurements", "Iteration measurements must be an array.");
+    } else {
+      const seen = new Set<string>();
+      body.outputs.measurements.forEach((measurement, index) => {
+        const suffix = `.iteration.body.outputs.measurements[${index}]`;
+        boundary(measurement, suffix, "outputs");
+        const id = isRecord(measurement) ? measurement.id : undefined;
+        if (typeof id !== "string" || !/^[A-Za-z0-9_]+$/.test(id) || seen.has(id)) {
+          invalid(`${suffix}.id`, "Measurement ids must be unique identifiers.");
+        } else {
+          seen.add(id);
+        }
+      });
+    }
+  }
   if (bodyOutputStop || body.outputs.converged !== undefined) {
     boundary(body.outputs.converged, ".iteration.body.outputs.converged", "outputs");
   }
 }
 
+const portIds = (ports: unknown) =>
+  new Set(
+    (Array.isArray(ports) ? ports : []).flatMap((port) =>
+      isRecord(port) && typeof port.id === "string" ? [port.id] : [],
+    ),
+  );
+
+/** A reference node must name a definition in `workflows` and match its interface by port id. */
+function validateReferenceNode(
+  node: Record<string, unknown>,
+  path: string,
+  workflow: Record<string, unknown>,
+  diagnostics: WorkflowValidationDiagnostic[],
+): void {
+  const nodeId = typeof node.id === "string" ? node.id : undefined;
+  const invalid = (suffix: string, message: string) =>
+    diagnostics.push({
+      code: "invalid-workflow-reference",
+      path: `${path}${suffix}`,
+      message,
+      ...(nodeId ? { nodeId } : {}),
+    });
+  if (workflow.version !== compiledReferenceVersion) {
+    invalid(".workflowRef", "Workflow references require compiled workflow version 3.");
+    return;
+  }
+  const reference = node.workflowRef;
+  if (!isRecord(reference) || typeof reference.workflow !== "string") {
+    invalid(".workflowRef", "A workflow reference must name a workflow key.");
+    return;
+  }
+  const maxDepth = reference.maxDepth;
+  if (
+    maxDepth !== undefined &&
+    (typeof maxDepth !== "number" || !Number.isInteger(maxDepth) || maxDepth < 1)
+  ) {
+    invalid(".workflowRef.maxDepth", "maxDepth must be a whole number of at least 1.");
+  }
+  const workflows = isRecord(workflow.workflows) ? workflow.workflows : {};
+  const definition = workflows[reference.workflow];
+  if (!isRecord(definition)) {
+    invalid(
+      ".workflowRef.workflow",
+      `Referenced workflow ${reference.workflow} is not in the closure.`,
+    );
+    return;
+  }
+  const contract = isRecord(definition.interface) ? definition.interface : {};
+  const interfaceInputs = portIds(contract.inputs);
+  const interfaceOutputs = portIds(contract.outputs);
+  const nodeInputs = portIds(node.inputs);
+  for (const id of nodeInputs) {
+    if (!interfaceInputs.has(id)) {
+      invalid(".inputs", `Input ${id} is not an input of ${reference.workflow}.`);
+    }
+  }
+  for (const id of interfaceInputs) {
+    if (!nodeInputs.has(id)) {
+      invalid(".inputs", `Interface input ${id} of ${reference.workflow} is not provided.`);
+    }
+  }
+  for (const id of portIds(node.outputs)) {
+    if (!interfaceOutputs.has(id)) {
+      invalid(".outputs", `Output ${id} is not an output of ${reference.workflow}.`);
+    }
+  }
+}
+
+/** Validates each frozen definition and rejects reference cycles without a finite maxDepth. */
+function validateWorkflowClosure(
+  workflow: Record<string, unknown>,
+  diagnostics: WorkflowValidationDiagnostic[],
+): void {
+  if (!isRecord(workflow.workflows)) {
+    diagnostics.push({
+      code: "invalid-workflow-reference",
+      path: "workflows",
+      message: "Compiled workflow version 3 requires a workflows closure object.",
+    });
+    return;
+  }
+  const workflows = workflow.workflows;
+  const references = new Map<string, Array<{ to: string; bounded: boolean }>>();
+  const collect = (key: string, nodes: unknown) =>
+    references.set(
+      key,
+      (Array.isArray(nodes) ? nodes : []).flatMap((node) =>
+        isRecord(node) &&
+        isRecord(node.workflowRef) &&
+        typeof node.workflowRef.workflow === "string"
+          ? [{ to: node.workflowRef.workflow, bounded: node.workflowRef.maxDepth !== undefined }]
+          : [],
+      ),
+    );
+  collect("", workflow.nodes);
+  for (const [key, definition] of Object.entries(workflows)) {
+    const path = `workflows[${JSON.stringify(key)}]`;
+    if (!isRecord(definition)) {
+      diagnostics.push({
+        code: "invalid-workflow-reference",
+        path,
+        message: `Workflow definition ${key} must be an object.`,
+      });
+      continue;
+    }
+    for (const inner of validateCompiled(
+      {
+        format: compiledFormat,
+        version: compiledReferenceVersion,
+        nodes: definition.nodes,
+        edges: definition.edges,
+        order: definition.order,
+        workflows,
+      },
+      false,
+    )) {
+      diagnostics.push({ ...inner, path: `${path}.${inner.path}` });
+    }
+    const contract = isRecord(definition.interface) ? definition.interface : undefined;
+    const nodes = Array.isArray(definition.nodes) ? definition.nodes : [];
+    const ports = (nodeId: unknown, side: "inputs" | "outputs") => {
+      const node = nodes.find((candidate) => isRecord(candidate) && candidate.id === nodeId);
+      return isRecord(node) ? portIds(node[side]) : new Set<string>();
+    };
+    if (!contract || !Array.isArray(contract.inputs) || !Array.isArray(contract.outputs)) {
+      diagnostics.push({
+        code: "invalid-workflow-reference",
+        path: `${path}.interface`,
+        message: `Workflow definition ${key} needs an interface with inputs and outputs.`,
+      });
+    } else {
+      for (const [side, list, portSide] of [
+        ["inputs", contract.inputs, "outputs"],
+        ["outputs", contract.outputs, "inputs"],
+      ] as const) {
+        list.forEach((port, index) => {
+          if (
+            !isRecord(port) ||
+            typeof port.id !== "string" ||
+            typeof port.portId !== "string" ||
+            !ports(port.nodeId, portSide).has(port.portId)
+          ) {
+            diagnostics.push({
+              code: "invalid-workflow-reference",
+              path: `${path}.interface.${side}[${index}]`,
+              message: `Interface ${side} entry must reference an existing ${portSide === "outputs" ? "start output" : "end input"} port.`,
+            });
+          }
+        });
+      }
+    }
+    collect(key, definition.nodes);
+  }
+
+  // A cycle needs at least one bounded reference on it (editor TECH-005).
+  const visit = (key: string, stack: string[], unboundedOnly: boolean[]): void => {
+    for (const { to, bounded } of references.get(key) ?? []) {
+      const index = stack.indexOf(to);
+      if (index >= 0) {
+        const cycleBounded = [...unboundedOnly.slice(index + 1), bounded].some(Boolean);
+        if (!cycleBounded) {
+          diagnostics.push({
+            code: "unbounded-recursive-reference",
+            path: "workflows",
+            message: `Recursive workflow reference ${[...stack.slice(index), to].join(" → ")} has no finite maxDepth bound.`,
+          });
+        }
+        continue;
+      }
+      visit(to, [...stack, to], [...unboundedOnly, bounded]);
+    }
+  };
+  visit("", [""], [false]);
+}
+
 export function validateExecutableWorkflow(value: unknown): WorkflowValidationDiagnostic[] {
+  return validateCompiled(value, true);
+}
+
+function validateCompiled(value: unknown, root: boolean): WorkflowValidationDiagnostic[] {
   const diagnostics: WorkflowValidationDiagnostic[] = [];
   if (!isRecord(value)) {
     return [
@@ -715,7 +913,11 @@ export function validateExecutableWorkflow(value: unknown): WorkflowValidationDi
       message: `Unsupported compiled workflow format ${String(value.format)}.`,
     });
   }
-  if (value.version !== compiledVersion && value.version !== compiledIterationVersion) {
+  if (
+    value.version !== compiledVersion &&
+    value.version !== compiledIterationVersion &&
+    value.version !== compiledReferenceVersion
+  ) {
     diagnostics.push({
       code: "unsupported-version",
       path: "version",
@@ -734,7 +936,13 @@ export function validateExecutableWorkflow(value: unknown): WorkflowValidationDi
       ) {
         validateIteration(rawNode, `nodes[${index}]`, value.version, diagnostics);
       }
+      if (isRecord(rawNode) && rawNode.workflowRef !== undefined) {
+        validateReferenceNode(rawNode, `nodes[${index}]`, value, diagnostics);
+      }
     });
+  }
+  if (root && value.version === compiledReferenceVersion) {
+    validateWorkflowClosure(value, diagnostics);
   }
   if (diagnostics.length > 0 || nodes === null || edges === null || order === null) {
     return diagnostics;
@@ -743,7 +951,9 @@ export function validateExecutableWorkflow(value: unknown): WorkflowValidationDi
   const workflow: ExecutableWorkflow = {
     format: compiledFormat,
     version:
-      value.version === compiledIterationVersion ? compiledIterationVersion : compiledVersion,
+      value.version === compiledIterationVersion || value.version === compiledReferenceVersion
+        ? value.version
+        : compiledVersion,
     nodes,
     edges,
     order,

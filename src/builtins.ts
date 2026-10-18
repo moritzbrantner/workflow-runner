@@ -14,8 +14,20 @@ function orderedArrayInputs(
 
 export function createBuiltInExecutors(): Record<string, WorkflowNodeExecutor> {
   return {
-    "control.start": ({ workflowInput }) => ({ outputs: { out: workflowInput } }),
-    "control.end": ({ inputs }) => ({ outputs: { result: inputs.in } }),
+    // `out` carries the whole run input; other declared ports (a referenced workflow's interface
+    // inputs, editor TECH-005) carry the run input field with the same id.
+    "control.start": ({ node, workflowInput }) => ({
+      outputs: Object.fromEntries([
+        ["out", workflowInput],
+        ...(node.outputs ?? [])
+          .filter((port) => port.id !== "out" && hasOwn(workflowInput, port.id))
+          .map((port) => [port.id, workflowInput[port.id]]),
+      ]),
+    }),
+    // A legacy `in` port is the result; named end ports (interface outputs) are passed through.
+    "control.end": ({ inputs }) => ({
+      outputs: hasOwn(inputs, "in") ? { result: inputs.in } : { ...inputs },
+    }),
     "control.if": ({ inputs }) => ({
       outputs: inputs.condition ? { true: inputs.value } : { false: inputs.value },
     }),

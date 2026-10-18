@@ -1,0 +1,182 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 3,
+  "nodes": [
+    {
+      "id": "start",
+      "label": "Start",
+      "kind": "control.start",
+      "outputs": [
+        {
+          "id": "n",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ]
+    },
+    {
+      "id": "call",
+      "label": "Call countdown",
+      "kind": "workflow.call",
+      "inputs": [
+        {
+          "id": "n",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "result",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ],
+      "workflowRef": {
+        "workflow": "countdown@1",
+        "maxDepth": 5
+      }
+    },
+    {
+      "id": "end",
+      "label": "End",
+      "kind": "control.end",
+      "inputs": [
+        {
+          "id": "result",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "call.result-end.result",
+      "sourceNodeId": "call",
+      "sourcePortId": "result",
+      "targetNodeId": "end",
+      "targetPortId": "result"
+    },
+    {
+      "id": "start.n-call.n",
+      "sourceNodeId": "start",
+      "sourcePortId": "n",
+      "targetNodeId": "call",
+      "targetPortId": "n"
+    }
+  ],
+  "order": ["start", "call", "end"],
+  "workflows": {
+    "countdown@1": {
+      "id": "countdown",
+      "version": 1,
+      "nodes": [
+        {
+          "id": "start",
+          "label": "Start",
+          "kind": "control.start",
+          "outputs": [
+            {
+              "id": "n",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ]
+        },
+        {
+          "id": "call",
+          "label": "Call countdown",
+          "kind": "workflow.call",
+          "inputs": [
+            {
+              "id": "n",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ],
+          "outputs": [
+            {
+              "id": "result",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ],
+          "workflowRef": {
+            "workflow": "countdown@1",
+            "maxDepth": 5
+          }
+        },
+        {
+          "id": "end",
+          "label": "End",
+          "kind": "control.end",
+          "inputs": [
+            {
+              "id": "result",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "call.result-end.result",
+          "sourceNodeId": "call",
+          "sourcePortId": "result",
+          "targetNodeId": "end",
+          "targetPortId": "result"
+        },
+        {
+          "id": "start.n-call.n",
+          "sourceNodeId": "start",
+          "sourcePortId": "n",
+          "targetNodeId": "call",
+          "targetPortId": "n"
+        }
+      ],
+      "order": ["start", "call", "end"],
+      "interface": {
+        "inputs": [
+          {
+            "id": "n",
+            "nodeId": "start",
+            "portId": "n",
+            "type": {
+              "kind": "typescript",
+              "source": "number"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "nodeId": "end",
+            "portId": "result",
+            "type": {
+              "kind": "typescript",
+              "source": "number"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
