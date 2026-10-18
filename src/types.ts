@@ -3,12 +3,20 @@ export type ExecutableWorkflowPortCardinality = {
   max?: number | null;
 };
 
+export type ExecutableWorkflowPortPayload = {
+  /** `streamed` outputs return an AsyncIterable of chunks; `buffered` values are complete. */
+  mode: "buffered" | "streamed";
+  mediaType?: string;
+};
+
 export type ExecutableWorkflowPort = {
   id: string;
   type: unknown;
   optional?: boolean;
   defaultValue?: unknown;
   cardinality?: ExecutableWorkflowPortCardinality;
+  /** Delivery contract from workflow-editor; absent means buffered. */
+  payload?: ExecutableWorkflowPortPayload;
 };
 
 export type ExecutableWorkflowIterationBoundary = { nodeId: string; portId: string };
@@ -68,6 +76,7 @@ export type WorkflowValidationDiagnosticCode =
   | "unsupported-format"
   | "unsupported-version"
   | "invalid-iteration"
+  | "payload-mode-mismatch"
   | "nested-iteration-not-supported"
   | "duplicate-node-id"
   | "duplicate-edge-id"
@@ -208,6 +217,9 @@ export type WorkflowRunError = {
     | "invalid-run-options"
     | "budget-exhausted"
     | "iteration-no-result"
+    | "invalid-stream-output"
+    | "stream-consumers-exceed-workers"
+    | "stream-deadlock"
     | "input-not-ready"
     | "missing-executor"
     | "node-failed"
@@ -342,6 +354,8 @@ export type WorkflowRunnerOptions = {
   maxWorkers?: number;
   /** Default run-wide node attempt budget; unbudgeted when omitted. */
   maxNodeAttempts?: number;
+  /** Chunks buffered per stream consumer before the producer waits; default 8. */
+  streamQueueCapacity?: number;
 };
 
 export type WorkflowRunner = {

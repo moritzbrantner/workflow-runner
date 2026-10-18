@@ -126,3 +126,16 @@ These failures stay distinct and are never reported as partial results:
 - cancellation ends the run as `cancelled`.
 
 `maxNodeAttempts`, set on the runner or per run, is an optional run-wide budget of actual node execution attempts (TECH-006/007). It counts retries and nested body attempts and is charged before each attempt starts. When it is exhausted, the run fails with `budget-exhausted` and no further attempt starts. No default budget is imposed.
+
+## Buffered and streamed ports
+
+Compiled ports may declare `payload: { mode: "buffered" | "streamed", mediaType? }` (workflow-editor Decision 1.5). A port with no payload is buffered.
+
+- **Buffered values:** a buffered value, such as a `Uint8Array`, is passed by reference to every consumer. The producer runs once.
+- **Streamed outputs:** an executor returns an `AsyncIterable` of chunks for a streamed output. Each outgoing connection receives every chunk once, in order, through a bounded per-consumer queue (`streamQueueCapacity`, default 8). The slowest active consumer backpressures the producer, so nothing is dropped and nothing is buffered without bound (TECH-004).
+- **Consumers that stop early:** a consumer that finishes early, fails or is skipped releases its queue, and the others continue. The producer is closed when no consumer remains (TECH-010).
+- **Run stopped:** cancelling or failing the run closes every stream.
+- **Scheduling:** consumers of one stream are started together. A stream with more consumers than `maxWorkers` fails with `stream-consumers-exceed-workers` instead of deadlocking.
+- **Rejected before execution:** connecting a buffered port to a streamed one fails with `payload-mode-mismatch`.
+- **Missing stream:** a streamed output that is not an async iterable fails with `invalid-stream-output`.
+- **JSON-safe events:** lifecycle events summarize streams and raw bytes as `{ payload: "stream" }` and `{ payload: "binary", byteLength }`, so engine run records never receive bytes or live streams.

@@ -169,6 +169,27 @@ function validatePorts(
       diagnostics,
       { nodeId, portId },
     );
+    let payload: ExecutableWorkflowPort["payload"];
+    if (rawPort.payload !== undefined) {
+      const raw = rawPort.payload;
+      if (
+        !isRecord(raw) ||
+        (raw.mode !== "buffered" && raw.mode !== "streamed") ||
+        (raw.mediaType !== undefined && typeof raw.mediaType !== "string")
+      ) {
+        pushShape(
+          diagnostics,
+          `${portPath}.payload`,
+          "Port payload must declare mode 'buffered' or 'streamed' and an optional string mediaType.",
+          { nodeId, portId },
+        );
+      } else {
+        payload = {
+          mode: raw.mode,
+          ...(typeof raw.mediaType === "string" ? { mediaType: raw.mediaType } : {}),
+        };
+      }
+    }
     ports.push({
       id: portId,
       type: rawPort.type,
@@ -179,6 +200,7 @@ function validatePorts(
         ? { defaultValue: rawPort.defaultValue }
         : {}),
       ...(cardinality === undefined ? {} : { cardinality }),
+      ...(payload === undefined ? {} : { payload }),
     });
   });
   return ports;
@@ -402,6 +424,18 @@ function validateSemantics(workflow: ExecutableWorkflow): WorkflowValidationDiag
         edgeId: edge.id,
         nodeId: edge.targetNodeId,
         portId: edge.targetPortId,
+      });
+    }
+    const sourcePort = source?.outputs?.find((port) => port.id === edge.sourcePortId);
+    const targetPort = target?.inputs?.find((port) => port.id === edge.targetPortId);
+    const sourceMode = sourcePort?.payload?.mode ?? "buffered";
+    const targetMode = targetPort?.payload?.mode ?? "buffered";
+    if (sourcePort && targetPort && sourceMode !== targetMode) {
+      diagnostics.push({
+        code: "payload-mode-mismatch",
+        path: `edges[${index}]`,
+        message: `Edge ${edge.id} connects a ${sourceMode} output to a ${targetMode} input; streams are never collected or split implicitly.`,
+        edgeId: edge.id,
       });
     }
   }

@@ -1,0 +1,147 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "wav-source",
+      "label": "WAV source",
+      "kind": "audio.source",
+      "outputs": [
+        {
+          "id": "wav",
+          "type": {
+            "kind": "typescript",
+            "source": "Uint8Array"
+          },
+          "payload": {
+            "mode": "buffered",
+            "mediaType": "audio/wav"
+          }
+        },
+        {
+          "id": "chunks",
+          "type": {
+            "kind": "typescript",
+            "source": "Uint8Array"
+          },
+          "payload": {
+            "mode": "streamed",
+            "mediaType": "audio/wav"
+          }
+        }
+      ]
+    },
+    {
+      "id": "archive",
+      "label": "Archive WAV",
+      "kind": "audio.archive",
+      "inputs": [
+        {
+          "id": "wav",
+          "type": {
+            "kind": "typescript",
+            "source": "Uint8Array"
+          },
+          "payload": {
+            "mode": "buffered",
+            "mediaType": "audio/wav"
+          }
+        }
+      ]
+    },
+    {
+      "id": "live-preview",
+      "label": "Live preview",
+      "kind": "audio.preview",
+      "inputs": [
+        {
+          "id": "chunks",
+          "type": {
+            "kind": "typescript",
+            "source": "Uint8Array"
+          },
+          "payload": {
+            "mode": "streamed",
+            "mediaType": "audio/wav"
+          }
+        }
+      ]
+    },
+    {
+      "id": "transcribe",
+      "label": "Transcribe stream",
+      "kind": "audio.transcribe",
+      "inputs": [
+        {
+          "id": "chunks",
+          "type": {
+            "kind": "typescript",
+            "source": "Uint8Array"
+          },
+          "payload": {
+            "mode": "streamed",
+            "mediaType": "audio/wav"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "text",
+          "type": {
+            "kind": "typescript",
+            "source": "string"
+          }
+        }
+      ]
+    },
+    {
+      "id": "waveform",
+      "label": "Render waveform",
+      "kind": "audio.waveform",
+      "inputs": [
+        {
+          "id": "wav",
+          "type": {
+            "kind": "typescript",
+            "source": "Uint8Array"
+          },
+          "payload": {
+            "mode": "buffered",
+            "mediaType": "audio/wav"
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "chunks-preview",
+      "sourceNodeId": "wav-source",
+      "sourcePortId": "chunks",
+      "targetNodeId": "live-preview",
+      "targetPortId": "chunks"
+    },
+    {
+      "id": "chunks-transcribe",
+      "sourceNodeId": "wav-source",
+      "sourcePortId": "chunks",
+      "targetNodeId": "transcribe",
+      "targetPortId": "chunks"
+    },
+    {
+      "id": "wav-archive",
+      "sourceNodeId": "wav-source",
+      "sourcePortId": "wav",
+      "targetNodeId": "archive",
+      "targetPortId": "wav"
+    },
+    {
+      "id": "wav-waveform",
+      "sourceNodeId": "wav-source",
+      "sourcePortId": "wav",
+      "targetNodeId": "waveform",
+      "targetPortId": "wav"
+    }
+  ],
+  "order": ["wav-source", "archive", "live-preview", "transcribe", "waveform"]
+}
