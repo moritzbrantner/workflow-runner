@@ -13,7 +13,9 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 function setNode(name, state, detail) {
   const node = nodes[name];
   node.classList.remove("running", "succeeded", "failed", "skipped");
-  if (state) node.classList.add(state);
+  if (state) {
+    node.classList.add(state);
+  }
   node.querySelector("small").textContent = detail;
 }
 
@@ -26,7 +28,9 @@ function emit(type, detail = "") {
 function reset() {
   events.replaceChildren();
   status.textContent = "running";
-  for (const name of Object.keys(nodes)) setNode(name, "", "pending");
+  for (const name of Object.keys(nodes)) {
+    setNode(name, "", "pending");
+  }
 }
 
 async function executeNode(name, attempt = 1) {

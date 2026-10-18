@@ -69,10 +69,7 @@ function buildInputs(
 
   for (const edge of [...incomingEdges].sort((left, right) => compareIds(left.id, right.id))) {
     const sourceResult = nodeResults[edge.sourceNodeId];
-    if (
-      sourceResult?.status !== "succeeded" ||
-      !hasOwn(sourceResult.outputs, edge.sourcePortId)
-    ) {
+    if (sourceResult?.status !== "succeeded" || !hasOwn(sourceResult.outputs, edge.sourcePortId)) {
       continue;
     }
     const values = valuesByPort.get(edge.targetPortId) ?? [];
@@ -293,11 +290,10 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
             outputs,
           });
         } catch (cause) {
-          const error = fail(
-            "node-failed",
-            `Node ${nodeId} failed: ${toErrorMessage(cause)}`,
-            { nodeId, cause },
-          );
+          const error = fail("node-failed", `Node ${nodeId} failed: ${toErrorMessage(cause)}`, {
+            nodeId,
+            cause,
+          });
           nodeResults[nodeId] = {
             status: "failed",
             attempts: 1,

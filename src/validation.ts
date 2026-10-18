@@ -59,8 +59,7 @@ function validateCardinality(
   const min = value.min;
   const max = value.max;
   const minValid = min === undefined || (Number.isInteger(min) && Number(min) >= 0);
-  const maxValid =
-    max === undefined || max === null || (Number.isInteger(max) && Number(max) >= 0);
+  const maxValid = max === undefined || max === null || (Number.isInteger(max) && Number(max) >= 0);
 
   if (!minValid) {
     diagnostics.push({
@@ -134,10 +133,15 @@ function validatePorts(
     }
     const portId = rawPort.id;
     if (!Object.prototype.hasOwnProperty.call(rawPort, "type")) {
-      pushShape(diagnostics, `${portPath}.type`, "Compiled workflow port type metadata is required.", {
-        nodeId,
-        portId,
-      });
+      pushShape(
+        diagnostics,
+        `${portPath}.type`,
+        "Compiled workflow port type metadata is required.",
+        {
+          nodeId,
+          portId,
+        },
+      );
     }
     if (seen.has(portId)) {
       diagnostics.push({
@@ -246,7 +250,11 @@ function validateEdges(
     let valid = true;
     for (const field of fields) {
       if (!nonEmptyString(rawEdge[field])) {
-        pushShape(diagnostics, `${path}.${field}`, `Workflow edge ${field} must be a non-empty string.`);
+        pushShape(
+          diagnostics,
+          `${path}.${field}`,
+          `Workflow edge ${field} must be a non-empty string.`,
+        );
         valid = false;
       }
     }
@@ -264,7 +272,10 @@ function validateEdges(
   return edges;
 }
 
-function validateOrder(value: unknown, diagnostics: WorkflowValidationDiagnostic[]): string[] | null {
+function validateOrder(
+  value: unknown,
+  diagnostics: WorkflowValidationDiagnostic[],
+): string[] | null {
   if (!Array.isArray(value)) {
     pushShape(diagnostics, "order", "Compiled workflow order must be an array.");
     return null;
@@ -272,7 +283,11 @@ function validateOrder(value: unknown, diagnostics: WorkflowValidationDiagnostic
   const order: string[] = [];
   value.forEach((rawId, index) => {
     if (!nonEmptyString(rawId)) {
-      pushShape(diagnostics, `order[${index}]`, "Workflow order entries must be non-empty strings.");
+      pushShape(
+        diagnostics,
+        `order[${index}]`,
+        "Workflow order entries must be non-empty strings.",
+      );
       return;
     }
     order.push(rawId);
@@ -441,7 +456,11 @@ function validateSemantics(workflow: ExecutableWorkflow): WorkflowValidationDiag
     }
   }
 
-  if (diagnostics.some((diagnostic) => diagnostic.code === "missing-node" || diagnostic.code === "missing-port")) {
+  if (
+    diagnostics.some(
+      (diagnostic) => diagnostic.code === "missing-node" || diagnostic.code === "missing-port",
+    )
+  ) {
     return diagnostics;
   }
 
