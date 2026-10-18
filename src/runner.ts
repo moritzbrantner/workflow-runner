@@ -7,6 +7,7 @@ import {
 } from "./attempts.js";
 import { createBuiltInExecutors } from "./builtins.js";
 import { digestExecutableWorkflow, findCheckpointProblem } from "./checkpoint.js";
+import { isAsyncIterable, StreamBroadcast, summarizeOutputs } from "./stream.js";
 import {
   type ExecutableWorkflow,
   type ExecutableWorkflowEdge,
@@ -80,6 +81,7 @@ function buildInputs(
   node: ExecutableWorkflowNode,
   incomingEdges: readonly ExecutableWorkflowEdge[],
   nodeResults: Readonly<Record<string, WorkflowNodeResult>>,
+  resolveValue: (edge: ExecutableWorkflowEdge, value: unknown) => unknown = (_, value) => value,
 ): InputBuildResult {
   const valuesByPort = new Map<string, unknown[]>();
   let activeEdgeCount = 0;
@@ -90,7 +92,7 @@ function buildInputs(
       continue;
     }
     const values = valuesByPort.get(edge.targetPortId) ?? [];
-    values.push(sourceResult.outputs[edge.sourcePortId]);
+    values.push(resolveValue(edge, sourceResult.outputs[edge.sourcePortId]));
     valuesByPort.set(edge.targetPortId, values);
     activeEdgeCount += 1;
   }
@@ -202,6 +204,9 @@ function describeAttemptFailure(
   return fail("node-failed", `Node ${nodeId} failed: ${message}`, options);
 }
 
+/** Default chunks buffered per stream consumer before the producer waits (TECH-004). */
+export const defaultWorkflowRunnerStreamQueueCapacity = 8;
+
 /** Default simultaneous node executions per run (TECH-012); override per runner or per run. */
 export const defaultWorkflowRunnerMaxWorkers = 4;
 
@@ -217,6 +222,12 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
   );
   const now = options.now ?? (() => new Date());
   const timers = options.timers ?? defaultWorkflowRunnerTimers;
+  const streamCapacity = options.streamQueueCapacity ?? defaultWorkflowRunnerStreamQueueCapacity;
+  if (!isValidWorkerCount(streamCapacity)) {
+    throw new TypeError(
+      `streamQueueCapacity must be a positive whole number; received ${String(streamCapacity)}.`,
+    );
+  }
   const defaultMaxWorkers = options.maxWorkers ?? defaultWorkflowRunnerMaxWorkers;
   if (!isValidWorkerCount(defaultMaxWorkers)) {
     throw new TypeError(
@@ -312,6 +323,66 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       | { kind: "failed"; error: WorkflowRunError }
       | { kind: "cancelled" }
       | { kind: "suspended"; checkpointWaiting: WorkflowRunCheckpoint["waiting"] };
+
+    // Streamed outputs are distributed to their consumers through bounded broadcasts (#12).
+    const broadcasts = new Map<string, StreamBroadcast>();
+    const streamKey = (nodeId: string, portId: string) => `${nodeId}\u0000${portId}`;
+    const outgoingByPort = new Map<string, ExecutableWorkflowEdge[]>();
+    for (const edge of workflow.edges) {
+      const key = streamKey(edge.sourceNodeId, edge.sourcePortId);
+      outgoingByPort.set(key, [...(outgoingByPort.get(key) ?? []), edge]);
+    }
+    const openStreams = (
+      node: ExecutableWorkflowNode,
+      outputs: Record<string, unknown>,
+    ): WorkflowRunError | undefined => {
+      for (const port of node.outputs ?? []) {
+        if (port.payload?.mode !== "streamed" || !hasOwn(outputs, port.id)) {
+          continue;
+        }
+        const value = outputs[port.id];
+        if (!isAsyncIterable(value)) {
+          return fail(
+            "invalid-stream-output",
+            `Node ${node.id} output ${port.id} is streamed but the executor did not return an async iterable.`,
+            { nodeId: node.id },
+          );
+        }
+        const edges = outgoingByPort.get(streamKey(node.id, port.id)) ?? [];
+        if (edges.length > 0) {
+          broadcasts.set(
+            streamKey(node.id, port.id),
+            new StreamBroadcast(
+              value,
+              edges.map((edge) => edge.id),
+              streamCapacity,
+            ),
+          );
+        }
+      }
+      return undefined;
+    };
+    const pendingReleases: Promise<void>[] = [];
+    // Stopping the run (cancellation or failure) ends every stream it owns.
+    runSignal.addEventListener(
+      "abort",
+      () => {
+        for (const broadcast of broadcasts.values()) {
+          pendingReleases.push(broadcast.releaseAll());
+        }
+      },
+      { once: true },
+    );
+    const streamFor = (edge: ExecutableWorkflowEdge) =>
+      broadcasts.get(streamKey(edge.sourceNodeId, edge.sourcePortId));
+    const resolveStreamValue = (edge: ExecutableWorkflowEdge, value: unknown) =>
+      streamFor(edge)?.subscribe(edge.id) ?? value;
+    /** A finished, failed or skipped consumer no longer holds back its streams (TECH-010). */
+    const releaseStreams = async (nodeId: string) => {
+      for (const edge of incomingByNodeId.get(nodeId) ?? []) {
+        await streamFor(edge)?.release(edge.id);
+      }
+    };
 
     const executeNode = async (
       node: ExecutableWorkflowNode,
@@ -415,6 +486,25 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
 
       if (outcome?.kind === "succeeded") {
         const outputs = outcome.result.outputs ?? {};
+        const streamError = openStreams(node, outputs);
+        if (streamError) {
+          nodeResults[nodeId] = {
+            status: "failed",
+            attempts: attempt,
+            inputs,
+            outputs: {},
+            error: streamError,
+          };
+          emit({
+            type: "node.failed",
+            runId: request.runId,
+            nodeId,
+            attempt,
+            timestamp: timestamp(),
+            error: streamError,
+          });
+          return { kind: "failed", error: streamError };
+        }
         nodeResults[nodeId] = { status: "succeeded", attempts: attempt, inputs, outputs };
         emit({
           type: "node.succeeded",
@@ -422,7 +512,7 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           nodeId,
           attempt,
           timestamp: timestamp(),
-          outputs,
+          outputs: summarizeOutputs(outputs),
         });
         return { kind: "succeeded" };
       }
@@ -645,6 +735,100 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       (incomingByNodeId.get(nodeId) ?? []).every((edge) => nodeResults[edge.sourceNodeId]);
 
     // Launch ready nodes in compiled order, up to this run's worker limit (TECH-012).
+    /** Prepares and starts one ready node; returns false when the run must stop. */
+    const launchNode = (nodeId: string): boolean => {
+      pending.splice(pending.indexOf(nodeId), 1);
+      const node = nodeById.get(nodeId);
+      if (!node) {
+        throw new Error(`Validated workflow is missing node ${nodeId}.`);
+      }
+      const incomingEdges = incomingByNodeId.get(nodeId) ?? [];
+      const built = buildInputs(node, incomingEdges, nodeResults, resolveStreamValue);
+      if (incomingEdges.length > 0 && built.activeEdgeCount === 0) {
+        nodeResults[nodeId] = {
+          status: "skipped",
+          attempts: 0,
+          inputs: built.inputs,
+          outputs: {},
+          reason: "inactive-inputs",
+        };
+        emit({
+          type: "node.skipped",
+          runId: request.runId,
+          nodeId,
+          timestamp: timestamp(),
+          reason: "inactive-inputs",
+        });
+        pendingReleases.push(releaseStreams(nodeId));
+        return true;
+      }
+      if (built.error) {
+        nodeResults[nodeId] = {
+          status: "failed",
+          attempts: 0,
+          inputs: built.inputs,
+          outputs: {},
+          error: built.error,
+        };
+        emit({
+          type: "node.failed",
+          runId: request.runId,
+          nodeId,
+          attempt: 0,
+          timestamp: timestamp(),
+          error: built.error,
+        });
+        stop = { kind: "failed", error: built.error };
+        return false;
+      }
+      const finish = (outcome: NodeOutcome) =>
+        releaseStreams(nodeId).then(() => ({ nodeId, outcome }));
+      if (node.kind === "control.iterate" && node.iteration) {
+        running.set(nodeId, executeIteration(node, node.iteration, built.inputs).then(finish));
+        return true;
+      }
+      const executor = executors.get(node.kind);
+      if (!executor) {
+        const error = fail(
+          "missing-executor",
+          `No executor is registered for workflow node kind ${node.kind}.`,
+          { nodeId },
+        );
+        nodeResults[nodeId] = {
+          status: "failed",
+          attempts: 0,
+          inputs: built.inputs,
+          outputs: {},
+          error,
+        };
+        stop = { kind: "failed", error };
+        return false;
+      }
+      running.set(nodeId, executeNode(node, built.inputs, executor).then(finish));
+      return true;
+    };
+
+    /**
+     * Consumers of one stream start together so a consumer waiting for a worker slot never
+     * backpressures the producer into a deadlock.
+     */
+    const streamGroup = (nodeId: string): string[] => {
+      const group = new Set<string>([nodeId]);
+      for (const edge of incomingByNodeId.get(nodeId) ?? []) {
+        if (!streamFor(edge)) {
+          continue;
+        }
+        for (const sibling of outgoingByPort.get(streamKey(edge.sourceNodeId, edge.sourcePortId)) ??
+          []) {
+          if (pending.includes(sibling.targetNodeId)) {
+            group.add(sibling.targetNodeId);
+          }
+        }
+      }
+      return workflow.order.filter((id) => group.has(id));
+    };
+
+    // Launch ready nodes in compiled order, up to this run's worker limit (TECH-012).
     const launchReadyNodes = () => {
       let progressed = true;
       while (progressed && !stop) {
@@ -653,85 +837,30 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           if (stop || running.size >= maxWorkers) {
             return;
           }
-          if (!isReady(nodeId)) {
+          if (!pending.includes(nodeId) || !isReady(nodeId)) {
             continue;
           }
-          pending.splice(pending.indexOf(nodeId), 1);
+          const group = streamGroup(nodeId);
+          if (group.length > maxWorkers) {
+            stop = {
+              kind: "failed",
+              error: fail(
+                "stream-consumers-exceed-workers",
+                `Nodes ${group.join(", ")} consume one stream together and need ${group.length} workers; maxWorkers is ${maxWorkers}.`,
+                { nodeId },
+              ),
+            };
+            return;
+          }
+          if (!group.every(isReady) || running.size + group.length > maxWorkers) {
+            continue;
+          }
           progressed = true;
-          const node = nodeById.get(nodeId);
-          if (!node) {
-            throw new Error(`Validated workflow is missing node ${nodeId}.`);
+          for (const member of group) {
+            if (!launchNode(member)) {
+              return;
+            }
           }
-          const incomingEdges = incomingByNodeId.get(nodeId) ?? [];
-          const built = buildInputs(node, incomingEdges, nodeResults);
-          if (incomingEdges.length > 0 && built.activeEdgeCount === 0) {
-            nodeResults[nodeId] = {
-              status: "skipped",
-              attempts: 0,
-              inputs: built.inputs,
-              outputs: {},
-              reason: "inactive-inputs",
-            };
-            emit({
-              type: "node.skipped",
-              runId: request.runId,
-              nodeId,
-              timestamp: timestamp(),
-              reason: "inactive-inputs",
-            });
-            continue;
-          }
-          if (built.error) {
-            nodeResults[nodeId] = {
-              status: "failed",
-              attempts: 0,
-              inputs: built.inputs,
-              outputs: {},
-              error: built.error,
-            };
-            emit({
-              type: "node.failed",
-              runId: request.runId,
-              nodeId,
-              attempt: 0,
-              timestamp: timestamp(),
-              error: built.error,
-            });
-            stop = { kind: "failed", error: built.error };
-            return;
-          }
-          if (node.kind === "control.iterate" && node.iteration) {
-            const iteration = node.iteration;
-            running.set(
-              nodeId,
-              executeIteration(node, iteration, built.inputs).then((outcome) => ({
-                nodeId,
-                outcome,
-              })),
-            );
-            continue;
-          }
-          const executor = executors.get(node.kind);
-          if (!executor) {
-            const error = fail(
-              "missing-executor",
-              `No executor is registered for workflow node kind ${node.kind}.`,
-              { nodeId },
-            );
-            nodeResults[nodeId] = {
-              status: "failed",
-              attempts: 0,
-              inputs: built.inputs,
-              outputs: {},
-              error,
-            };
-            stop = { kind: "failed", error };
-            return;
-          }
-          running.set(
-            nodeId,
-            executeNode(node, built.inputs, executor).then((outcome) => ({ nodeId, outcome })),
-          );
         }
       }
     };
@@ -743,6 +872,15 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         }
         if (!stop) {
           launchReadyNodes();
+          if (!stop && running.size === 0 && pending.length > 0) {
+            stop = {
+              kind: "failed",
+              error: fail(
+                "stream-deadlock",
+                `Nodes ${pending.join(", ")} can never start: their stream consumers cannot run together.`,
+              ),
+            };
+          }
         }
         if (stop && stop.kind !== "suspended" && !runSignal.aborted) {
           // A failed run starts no new work and stops what is still in flight.
@@ -768,6 +906,11 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       }
     } finally {
       request.signal?.removeEventListener("abort", onCallerAbort);
+      // Close any upstream whose consumers never ran (failed, cancelled or suspended runs).
+      for (const broadcast of broadcasts.values()) {
+        pendingReleases.push(broadcast.releaseAll());
+      }
+      await Promise.allSettled(pendingReleases);
     }
 
     if (stop?.kind === "cancelled") {
