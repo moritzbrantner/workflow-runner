@@ -725,8 +725,12 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       const boundaryIds = [...new Set(body.inputs.map((input) => input.id))];
       const bodyWorkflow: ExecutableWorkflow = {
         format: workflow.format,
-        // Version 2 so inner iterations in the body run as ordinary iteration nodes (#43).
-        version: 2,
+        // Version 2 so inner iterations run as ordinary iteration nodes (#43); version 3 with the
+        // root closure so body nodes can call Workflow References (#45).
+        version: workflow.version === 3 ? 3 : 2,
+        ...(workflow.version === 3
+          ? { workflows: shared.workflows ?? workflow.workflows ?? {} }
+          : {}),
         nodes: [
           {
             id: seedNodeId,
@@ -799,7 +803,10 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         }
         if (bodyResult.status === "failed") {
           const code =
-            bodyResult.error.code === "budget-exhausted" ? "budget-exhausted" : "node-failed";
+            bodyResult.error.code === "budget-exhausted" ||
+            bodyResult.error.code === "reference-depth-exhausted"
+              ? bodyResult.error.code
+              : "node-failed";
           return finish(
             fail(
               code,

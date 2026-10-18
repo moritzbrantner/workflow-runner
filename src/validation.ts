@@ -558,6 +558,7 @@ function validateIteration(
   path: string,
   version: unknown,
   diagnostics: WorkflowValidationDiagnostic[],
+  workflows?: unknown,
 ): void {
   const nodeId = typeof node.id === "string" ? node.id : undefined;
   const invalid = (suffix: string, message: string) =>
@@ -630,14 +631,21 @@ function validateIteration(
     return;
   }
   const bodyPath = `${path}.iteration.body.`;
-  // Bodies are compiled-v2 graphs: an inner iteration validates its own bound and body (#43).
-  for (const bodyDiagnostic of validateExecutableWorkflow({
-    format: compiledFormat,
-    version: compiledIterationVersion,
-    nodes: body.nodes,
-    edges: body.edges,
-    order: body.order,
-  })) {
+  // Bodies are graphs of the enclosing version: an inner iteration validates its own bound and
+  // body (#43), and in version 3 a body node may reference the root closure (#45).
+  const bodyVersion =
+    version === compiledReferenceVersion ? compiledReferenceVersion : compiledIterationVersion;
+  for (const bodyDiagnostic of validateCompiled(
+    {
+      format: compiledFormat,
+      version: bodyVersion,
+      nodes: body.nodes,
+      edges: body.edges,
+      order: body.order,
+      ...(bodyVersion === compiledReferenceVersion ? { workflows } : {}),
+    },
+    false,
+  )) {
     diagnostics.push({ ...bodyDiagnostic, path: `${bodyPath}${bodyDiagnostic.path}` });
   }
   const bodyPorts = new Map<string, { inputs: Set<string>; outputs: Set<string> }>();
@@ -790,17 +798,23 @@ function validateWorkflowClosure(
   }
   const workflows = workflow.workflows;
   const references = new Map<string, Array<{ to: string; bounded: boolean }>>();
-  const collect = (key: string, nodes: unknown) =>
-    references.set(
-      key,
-      (Array.isArray(nodes) ? nodes : []).flatMap((node) =>
-        isRecord(node) &&
-        isRecord(node.workflowRef) &&
-        typeof node.workflowRef.workflow === "string"
+  // References inside iteration bodies (any depth) belong to the enclosing graph's edges (#45).
+  const referencesIn = (nodes: unknown): Array<{ to: string; bounded: boolean }> =>
+    (Array.isArray(nodes) ? nodes : []).flatMap((node) => {
+      if (!isRecord(node)) {
+        return [];
+      }
+      const own =
+        isRecord(node.workflowRef) && typeof node.workflowRef.workflow === "string"
           ? [{ to: node.workflowRef.workflow, bounded: node.workflowRef.maxDepth !== undefined }]
-          : [],
-      ),
-    );
+          : [];
+      const body =
+        isRecord(node.iteration) && isRecord(node.iteration.body)
+          ? referencesIn(node.iteration.body.nodes)
+          : [];
+      return [...own, ...body];
+    });
+  const collect = (key: string, nodes: unknown) => references.set(key, referencesIn(nodes));
   collect("", workflow.nodes);
   for (const [key, definition] of Object.entries(workflows)) {
     const path = `workflows[${JSON.stringify(key)}]`;
@@ -926,7 +940,7 @@ function validateCompiled(value: unknown, root: boolean): WorkflowValidationDiag
         isRecord(rawNode) &&
         (rawNode.kind === "control.iterate" || rawNode.iteration !== undefined)
       ) {
-        validateIteration(rawNode, `nodes[${index}]`, value.version, diagnostics);
+        validateIteration(rawNode, `nodes[${index}]`, value.version, diagnostics, value.workflows);
       }
       if (isRecord(rawNode) && rawNode.workflowRef !== undefined) {
         validateReferenceNode(rawNode, `nodes[${index}]`, value, diagnostics);

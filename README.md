@@ -214,3 +214,11 @@ An iteration body may contain another `control.iterate` node (workflow-editor #9
 - Every level charges its actual attempts to the shared run-wide budget.
 - An invalid inner bound is reported at its nested path.
 - An inner loop whose inputs are not wired fails with an `input-not-ready` error. It never guesses a value.
+
+### References inside iteration bodies
+
+In version 3, an iteration body node may carry `workflowRef` (workflow-editor #141). It resolves against the root `workflows` closure, the same way as a top-level reference, and is called once per iteration.
+
+- **Validation:** body references are validated like top-level ones. Reference cycles that pass through bodies must have a bound.
+- **Limits:** the `maxDepth` rule and the run-wide budget apply across the iteration.
+- **Failures:** a `reference-depth-exhausted` or `budget-exhausted` failure inside a body keeps its code.
