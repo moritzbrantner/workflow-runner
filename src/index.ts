@@ -3,7 +3,10 @@ export { validateExecutableWorkflow } from "./validation.js";
 export { digestExecutableWorkflow } from "./checkpoint.js";
 export {
   createWorkflowRunEvidence,
+  createWorkflowRunEvidenceFromRecords,
+  workflowNodeResultRecordFormat,
   workflowRunEvidenceFormat,
+  type WorkflowNodeResultRecord,
   type WorkflowRunEvidence,
   type WorkflowRunRerun,
 } from "./evidence.js";

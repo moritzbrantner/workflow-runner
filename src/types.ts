@@ -1,4 +1,4 @@
-import type { WorkflowRunRerun } from "./evidence.js";
+import type { WorkflowNodeResultRecord, WorkflowRunRerun } from "./evidence.js";
 
 export type ExecutableWorkflowPortCardinality = {
   min?: number;
@@ -54,6 +54,8 @@ export type ExecutableWorkflowNode = {
   data?: Record<string, unknown>;
   /** Compiled-v2 bounded iteration (`control.iterate`). */
   iteration?: ExecutableWorkflowIteration;
+  /** `on-completion` asks for the completed result to be persisted immediately (TECH-011). */
+  persistence?: "on-completion";
 };
 
 export type ExecutableWorkflowEdge = {
@@ -110,6 +112,12 @@ export type WorkflowRunRequest = {
    * are still returned in the terminal result. Observer exceptions are ignored.
    */
   onEvent?: (event: WorkflowRunEvent) => void;
+  /**
+   * Host persistence for nodes compiled with `persistence: "on-completion"` (TECH-011). The runner
+   * awaits it before the node counts as completed; a rejection fails the node with
+   * `persistence-failed`. Without it, opted-in results persist only with the terminal result.
+   */
+  persistNodeResult?: (record: WorkflowNodeResultRecord) => void | Promise<void>;
   /** Simultaneous node executions for this run; overrides the runner default (TECH-012). */
   maxWorkers?: number;
   /**
@@ -235,6 +243,7 @@ export type WorkflowRunError = {
     | "invalid-checkpoint"
     | "invalid-run-options"
     | "invalid-rerun"
+    | "persistence-failed"
     | "budget-exhausted"
     | "iteration-no-result"
     | "invalid-stream-output"
@@ -316,6 +325,14 @@ export type WorkflowRunEvent =
   | { type: "run.succeeded"; runId: string; timestamp: string; output: unknown }
   | { type: "run.failed"; runId: string; timestamp: string; error: WorkflowRunError }
   | { type: "run.cancelled"; runId: string; timestamp: string }
+  | {
+      type: "node.persisted";
+      runId: string;
+      nodeId: string;
+      attempt: number;
+      iteration?: { nodeId: string; iteration: number };
+      timestamp: string;
+    }
   | {
       type: "run.rerun";
       runId: string;

@@ -236,6 +236,14 @@ function validateNodes(
         nodeId: rawNode.id,
       });
     }
+    if (rawNode.persistence !== undefined && rawNode.persistence !== "on-completion") {
+      pushShape(
+        diagnostics,
+        `${path}.persistence`,
+        "Workflow node persistence must be 'on-completion' when present.",
+        { nodeId: rawNode.id },
+      );
+    }
     if (rawNode.data !== undefined && !isRecord(rawNode.data)) {
       pushShape(diagnostics, `${path}.data`, "Workflow node data must be an object.", {
         nodeId: rawNode.id,

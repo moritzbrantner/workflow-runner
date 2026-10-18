@@ -132,3 +132,61 @@ export function planRerun(
   }
   return { reused, rerunNodeIds: workflow.order.filter((nodeId) => !reused[nodeId]) };
 }
+
+export const workflowNodeResultRecordFormat =
+  "@moritzbrantner/workflow-runner/node-result" as const;
+
+/**
+ * A completed result handed to host persistence as soon as an opted-in node
+ * (`persistence: "on-completion"`, TECH-011) finishes, before the run ends.
+ */
+export type WorkflowNodeResultRecord = {
+  format: typeof workflowNodeResultRecordFormat;
+  version: 1;
+  runId: string;
+  workflowDigest: string;
+  inputDigest: string;
+  nodeId: string;
+  attempt: number;
+  /** Present for nodes inside an iteration body: the iteration node and 1-based iteration. */
+  iteration?: { nodeId: string; iteration: number };
+  result: Extract<WorkflowNodeResult, { status: "succeeded" }>;
+};
+
+export function isJsonSafeValue(value: unknown): boolean {
+  return isJsonSafe(value);
+}
+
+/**
+ * Rebuilds rerun evidence from acknowledged node records, e.g. after the host lost the run before
+ * terminal persistence. Only top-level records of one run are used.
+ */
+export function createWorkflowRunEvidenceFromRecords(
+  records: readonly WorkflowNodeResultRecord[],
+): WorkflowRunEvidence {
+  const topLevel = records.filter((record) => record.iteration === undefined);
+  const first = topLevel[0];
+  if (!first) {
+    throw new TypeError("At least one top-level node result record is required.");
+  }
+  for (const record of topLevel) {
+    if (
+      record.format !== workflowNodeResultRecordFormat ||
+      record.runId !== first.runId ||
+      record.workflowDigest !== first.workflowDigest ||
+      record.inputDigest !== first.inputDigest
+    ) {
+      throw new TypeError("Node result records must belong to one run and workflow.");
+    }
+  }
+  return {
+    format: workflowRunEvidenceFormat,
+    version: 1,
+    runId: first.runId,
+    workflowDigest: first.workflowDigest,
+    inputDigest: first.inputDigest,
+    results: Object.fromEntries(
+      topLevel.map((record) => [record.nodeId, structuredClone(record.result)]),
+    ),
+  };
+}

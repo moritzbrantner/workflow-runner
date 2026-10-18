@@ -7,7 +7,12 @@ import {
 } from "./attempts.js";
 import { createBuiltInExecutors } from "./builtins.js";
 import { digestExecutableWorkflow, findCheckpointProblem } from "./checkpoint.js";
-import { planRerun } from "./evidence.js";
+import {
+  isJsonSafeValue,
+  planRerun,
+  runInputDigest,
+  workflowNodeResultRecordFormat,
+} from "./evidence.js";
 import { isAsyncIterable, StreamBroadcast, summarizeOutputs } from "./stream.js";
 import {
   type ExecutableWorkflow,
@@ -258,6 +263,12 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
   type SharedRunState = {
     /** Remaining node execution attempts for the whole run, including nested work (TECH-007). */
     budget: { remaining: number };
+    /** Identity of the top-level run for node result records (TECH-011). */
+    persistence?: {
+      workflowDigest: string;
+      inputDigest: string;
+      iteration?: { nodeId: string; iteration: number };
+    };
     /** Pre-completed node results injected into a nested graph (iteration boundary values). */
     seed?: Record<string, WorkflowNodeResult>;
   };
@@ -430,6 +441,55 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       }
     };
 
+    /** Hands an opted-in node's result to host persistence and awaits the acknowledgment. */
+    const persistIfRequested = async (
+      node: ExecutableWorkflowNode,
+      result: Extract<WorkflowNodeResult, { status: "succeeded" }>,
+    ): Promise<WorkflowRunError | undefined> => {
+      if (node.persistence !== "on-completion" || !request.persistNodeResult) {
+        return undefined;
+      }
+      const identity = shared.persistence ?? {
+        workflowDigest: digestExecutableWorkflow(workflow),
+        inputDigest: runInputDigest(request),
+      };
+      if (!isJsonSafeValue(result.inputs) || !isJsonSafeValue(result.outputs)) {
+        return fail(
+          "persistence-failed",
+          `Node ${node.id} result is not JSON-safe and cannot be persisted on completion.`,
+          { nodeId: node.id, attempt: result.attempts },
+        );
+      }
+      try {
+        await request.persistNodeResult({
+          format: workflowNodeResultRecordFormat,
+          version: 1,
+          runId: request.runId,
+          workflowDigest: identity.workflowDigest,
+          inputDigest: identity.inputDigest,
+          nodeId: node.id,
+          attempt: result.attempts,
+          ...(identity.iteration ? { iteration: identity.iteration } : {}),
+          result: structuredClone(result),
+        });
+      } catch (cause) {
+        return fail(
+          "persistence-failed",
+          `Node ${node.id} result was not acknowledged by host persistence: ${toErrorMessage(cause)}`,
+          { nodeId: node.id, attempt: result.attempts, cause: toErrorCause(cause) },
+        );
+      }
+      emit({
+        type: "node.persisted",
+        runId: request.runId,
+        nodeId: node.id,
+        attempt: result.attempts,
+        ...(identity.iteration ? { iteration: identity.iteration } : {}),
+        timestamp: timestamp(),
+      });
+      return undefined;
+    };
+
     const executeNode = async (
       node: ExecutableWorkflowNode,
       inputs: Record<string, unknown>,
@@ -551,7 +611,28 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           });
           return { kind: "failed", error: streamError };
         }
-        nodeResults[nodeId] = { status: "succeeded", attempts: attempt, inputs, outputs };
+        const succeeded = { status: "succeeded" as const, attempts: attempt, inputs, outputs };
+        // Downstream nodes see the result only after an opted-in write is acknowledged.
+        const persistError = await persistIfRequested(node, succeeded);
+        if (persistError) {
+          nodeResults[nodeId] = {
+            status: "failed",
+            attempts: attempt,
+            inputs,
+            outputs: {},
+            error: persistError,
+          };
+          emit({
+            type: "node.failed",
+            runId: request.runId,
+            nodeId,
+            attempt,
+            timestamp: timestamp(),
+            error: persistError,
+          });
+          return { kind: "failed", error: persistError };
+        }
+        nodeResults[nodeId] = succeeded;
         emit({
           type: "node.succeeded",
           runId: request.runId,
@@ -672,9 +753,16 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
             ...(request.context ? { context: request.context } : {}),
             signal: runSignal,
             maxWorkers,
+            ...(request.persistNodeResult ? { persistNodeResult: request.persistNodeResult } : {}),
           },
           {
             budget: shared.budget,
+            persistence: {
+              workflowDigest:
+                shared.persistence?.workflowDigest ?? digestExecutableWorkflow(workflow),
+              inputDigest: shared.persistence?.inputDigest ?? runInputDigest(request),
+              iteration: { nodeId, iteration: iterations + 1 },
+            },
             seed: {
               [seedNodeId]: {
                 status: "succeeded",
@@ -758,7 +846,12 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           maxIterations: iteration.maxIterations,
         },
       };
-      nodeResults[nodeId] = { status: "succeeded", attempts: 1, inputs, outputs };
+      const succeeded = { status: "succeeded" as const, attempts: 1, inputs, outputs };
+      const persistError = await persistIfRequested(node, succeeded);
+      if (persistError) {
+        return finish(persistError);
+      }
+      nodeResults[nodeId] = succeeded;
       emit({
         type: "node.succeeded",
         runId: request.runId,
