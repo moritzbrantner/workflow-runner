@@ -630,23 +630,15 @@ function validateIteration(
     return;
   }
   const bodyPath = `${path}.iteration.body.`;
+  // Bodies are compiled-v2 graphs: an inner iteration validates its own bound and body (#43).
   for (const bodyDiagnostic of validateExecutableWorkflow({
     format: compiledFormat,
-    version: compiledVersion,
+    version: compiledIterationVersion,
     nodes: body.nodes,
     edges: body.edges,
     order: body.order,
   })) {
-    diagnostics.push({
-      ...bodyDiagnostic,
-      ...(bodyDiagnostic.code === "invalid-iteration"
-        ? {
-            code: "nested-iteration-not-supported",
-            message: "An iteration cannot be nested inside an iteration body.",
-          }
-        : {}),
-      path: `${bodyPath}${bodyDiagnostic.path}`,
-    });
+    diagnostics.push({ ...bodyDiagnostic, path: `${bodyPath}${bodyDiagnostic.path}` });
   }
   const bodyPorts = new Map<string, { inputs: Set<string>; outputs: Set<string> }>();
   for (const bodyNode of Array.isArray(body.nodes) ? body.nodes : []) {

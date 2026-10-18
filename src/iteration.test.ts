@@ -112,7 +112,7 @@ test("the run-wide attempt budget counts nested body attempts and stops before o
   assert.equal(invalid.status === "failed" && invalid.error.code, "invalid-run-options");
 });
 
-test("rejects unbounded, malformed and nested iterations before any executor runs", async () => {
+test("rejects unbounded and malformed iterations, also when nested, before any executor runs", async () => {
   const cases: Array<[ExecutableWorkflow, string]> = [
     [
       variant((iteration) => {
@@ -134,10 +134,18 @@ test("rejects unbounded, malformed and nested iterations before any executor run
     ],
     [
       variant((iteration) => {
-        iteration.body.nodes[0].kind = "control.iterate";
-        iteration.body.nodes[0].iteration = structuredClone(iteration);
+        const inner = structuredClone(iteration);
+        inner.maxIterations = 0;
+        iteration.body.nodes.push({
+          id: "inner",
+          kind: "control.iterate",
+          inputs: [{ id: "state", type: {} }],
+          outputs: [{ id: "result", type: {} }],
+          iteration: inner,
+        });
+        iteration.body.order.push("inner");
       }),
-      "nested-iteration-not-supported",
+      "invalid-iteration",
     ],
     [{ ...structuredClone(fixture), version: 1 } as ExecutableWorkflow, "invalid-iteration"],
   ];

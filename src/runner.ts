@@ -725,7 +725,8 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       const boundaryIds = [...new Set(body.inputs.map((input) => input.id))];
       const bodyWorkflow: ExecutableWorkflow = {
         format: workflow.format,
-        version: 1,
+        // Version 2 so inner iterations in the body run as ordinary iteration nodes (#43).
+        version: 2,
         nodes: [
           {
             id: seedNodeId,
