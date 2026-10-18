@@ -222,3 +222,7 @@ In version 3, an iteration body node may carry `workflowRef` (workflow-editor #1
 - **Validation:** body references are validated like top-level ones. Reference cycles that pass through bodies must have a bound.
 - **Limits:** the `maxDepth` rule and the run-wide budget apply across the iteration.
 - **Failures:** a `reference-depth-exhausted` or `budget-exhausted` failure inside a body keeps its code.
+
+## Pull request validation
+
+The required `merge-ready` check aggregates the existing `verify` build, lint, type checks and tests. Changed static-site files receive the Pages syntax/file checks in that same PR job. Documentation-only PRs retain the existing full validation policy. Default-branch rules require this GitHub Actions check and a PR, with force pushes and deletion blocked. Non-major Renovate updates use GitHub-native auto-merge after required validation.
