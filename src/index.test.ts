@@ -295,13 +295,13 @@ test("fails readiness when active values do not satisfy runtime minimum cardinal
   }
 });
 
-test("treats a declared cardinality without max as unbounded, like editor control.merge", async () => {
+test("built-in control.merge collects the editor items input as an unbounded array", async () => {
   const observed: unknown[] = [];
   const runner = createWorkflowRunner({
     executors: {
-      "control.merge": ({ inputs }) => {
-        observed.push(inputs.items);
-        return { outputs: { out: inputs.items } };
+      "custom.observe": ({ inputs }) => {
+        observed.push(inputs.in);
+        return { outputs: {} };
       },
     },
   });
@@ -324,15 +324,23 @@ test("treats a declared cardinality without max as unbounded, like editor contro
     inputs: [port("items", { cardinality: { min: 1 } })],
     outputs: [port("out")],
   };
+  const observe = { id: "observe", kind: "custom.observe", inputs: [port("in")] };
+  const observeEdge = {
+    id: "e-out",
+    sourceNodeId: "merge",
+    sourcePortId: "out",
+    targetNodeId: "observe",
+    targetPortId: "in",
+  };
 
   const many = await runner.dispatch({
     runId: "merge-many",
     workflow: {
       format: "@moritzbrantner/workflow/compiled",
       version: 1,
-      nodes: [source("a", "A"), source("b", "B"), source("c", "C"), merge],
-      edges: [edge("e-c", "c"), edge("e-a", "a"), edge("e-b", "b")],
-      order: ["a", "b", "c", "merge"],
+      nodes: [source("a", "A"), source("b", "B"), source("c", "C"), merge, observe],
+      edges: [edge("e-c", "c"), edge("e-a", "a"), edge("e-b", "b"), observeEdge],
+      order: ["a", "b", "c", "merge", "observe"],
     },
   });
   const one = await runner.dispatch({
@@ -340,9 +348,9 @@ test("treats a declared cardinality without max as unbounded, like editor contro
     workflow: {
       format: "@moritzbrantner/workflow/compiled",
       version: 1,
-      nodes: [source("a", "A"), merge],
-      edges: [edge("e-a", "a")],
-      order: ["a", "merge"],
+      nodes: [source("a", "A"), merge, observe],
+      edges: [edge("e-a", "a"), observeEdge],
+      order: ["a", "merge", "observe"],
     },
   });
 
