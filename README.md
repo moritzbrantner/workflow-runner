@@ -45,3 +45,25 @@ See [ROADMAP.md](./ROADMAP.md) for the next execution/runtime slices and boundar
 bun install
 bun run verify
 ```
+
+## Executor policies
+
+Executors run exactly once by default; a failure is never retried implicitly (TECH-005). A registration may declare a policy:
+
+```ts
+runner.registerExecutor("model.infer", inferExecutor, {
+  retry: {
+    maxAttempts: 3,
+    idempotent: true, // required: repeating this executor is safe or idempotently keyed
+    isRetryable: (error) => error instanceof RateLimitError, // only classified transient failures
+    backoffMs: (attempt) => attempt * 500,
+  },
+  timeoutMs: 30_000,
+});
+```
+
+- The executor context carries `attempt` (1-based) for idempotency keys and provenance, and a per-attempt `signal` that aborts on run cancellation or timeout.
+- A retry starts only when the failure is classified retryable and attempts remain; `node.retrying` events record the node, failed attempt, next attempt, delay and reason. Policies that allow retries without `idempotent: true` are rejected at registration.
+- Failures are classified as `node-failed` (permanent), `retries-exhausted`, `node-timed-out`, `node-cancelled` (the run then ends `cancelled`, and no further attempt starts) or `node-termination-failed`.
+- Interrupted attempts are never abandoned: the runner waits for the executor to settle. Executors that cannot stop cooperatively must sit behind a host-owned isolation boundary and declare `terminate` (with an optional `shutdownMs` grace period), which the runner calls when an aborted attempt keeps running (TECH-008). Terminating local work does not undo remote side effects.
+- Timeouts and backoff use the injectable `timers` option, so tests need no wall-clock sleeps.
