@@ -1,6 +1,12 @@
 export { createWorkflowRunner, defaultWorkflowRunnerMaxWorkers } from "./runner.js";
 export { validateExecutableWorkflow } from "./validation.js";
 export { digestExecutableWorkflow } from "./checkpoint.js";
+export {
+  createWorkflowRunEvidence,
+  workflowRunEvidenceFormat,
+  type WorkflowRunEvidence,
+  type WorkflowRunRerun,
+} from "./evidence.js";
 export { workflowRunCheckpointFormat } from "./types.js";
 export type {
   ExecutableWorkflow,

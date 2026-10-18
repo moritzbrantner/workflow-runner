@@ -1,3 +1,5 @@
+import type { WorkflowRunRerun } from "./evidence.js";
+
 export type ExecutableWorkflowPortCardinality = {
   min?: number;
   max?: number | null;
@@ -110,6 +112,11 @@ export type WorkflowRunRequest = {
    * (TECH-006/007). Overrides the runner option; without either, attempts are unbudgeted.
    */
   maxNodeAttempts?: number;
+  /**
+   * Runs the selected nodes and their downstream nodes again, reusing the other recorded results
+   * from a previous run's evidence when its workflow and input digests still match (#23).
+   */
+  rerun?: WorkflowRunRerun;
   /** Continues a suspended run from its checkpoint, delivering the waiting task's response. */
   resume?: WorkflowRunResume;
 };
@@ -215,6 +222,7 @@ export type WorkflowRunError = {
     | "invalid-workflow"
     | "invalid-checkpoint"
     | "invalid-run-options"
+    | "invalid-rerun"
     | "budget-exhausted"
     | "iteration-no-result"
     | "invalid-stream-output"
@@ -295,6 +303,14 @@ export type WorkflowRunEvent =
   | { type: "run.succeeded"; runId: string; timestamp: string; output: unknown }
   | { type: "run.failed"; runId: string; timestamp: string; error: WorkflowRunError }
   | { type: "run.cancelled"; runId: string; timestamp: string }
+  | {
+      type: "run.rerun";
+      runId: string;
+      fromRunId: string;
+      reusedNodeIds: string[];
+      rerunNodeIds: string[];
+      timestamp: string;
+    }
   | {
       type: "node.iteration";
       runId: string;

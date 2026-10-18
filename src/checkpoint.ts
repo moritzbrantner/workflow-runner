@@ -18,7 +18,12 @@ function canonicalize(value: unknown): unknown {
 
 /** `sha256:<hex>` of the canonical JSON of a compiled workflow; pure and runtime-independent. */
 export function digestExecutableWorkflow(workflow: ExecutableWorkflow): string {
-  return `sha256:${sha256Hex(JSON.stringify(canonicalize(workflow)))}`;
+  return digestJsonValue(workflow);
+}
+
+/** `sha256:<hex>` of the canonical JSON of a JSON value. */
+export function digestJsonValue(value: unknown): string {
+  return `sha256:${sha256Hex(JSON.stringify(canonicalize(value)))}`;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
