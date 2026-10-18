@@ -15,6 +15,7 @@ import {
   type ExecutableWorkflowIterationBoundary,
   type ExecutableWorkflowNode,
   type ExecutableWorkflowPort,
+  type WorkflowErrorCause,
   type WorkflowExecutorRegistration,
   type WorkflowNodeResult,
   type WorkflowRunCheckpoint,
@@ -43,6 +44,24 @@ function compareIds(left: string, right: string): number {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Executor exceptions become concise JSON-safe causes so durable hosts (Workflow Engine) record a
+ * genuine workflow failure instead of an unstorable value (#25). Stacks are not included.
+ */
+function toErrorCause(error: unknown): WorkflowErrorCause {
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return {
+      name: error.name,
+      message: error.message,
+      ...(typeof code === "string" || (typeof code === "number" && Number.isFinite(code))
+        ? { code }
+        : {}),
+    };
+  }
+  return { name: typeof error, message: String(error) };
 }
 
 function fail(
@@ -170,7 +189,7 @@ function describeAttemptFailure(
   const options = {
     nodeId,
     attempt,
-    ...(outcome && "cause" in outcome ? { cause: outcome.cause } : {}),
+    ...(outcome && "cause" in outcome ? { cause: toErrorCause(outcome.cause) } : {}),
   };
   if (cancelled) {
     return fail(
