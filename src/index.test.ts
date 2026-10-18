@@ -294,3 +294,59 @@ test("fails readiness when active values do not satisfy runtime minimum cardinal
     assert.equal(result.error.code, "input-not-ready");
   }
 });
+
+test("treats a declared cardinality without max as unbounded, like editor control.merge", async () => {
+  const observed: unknown[] = [];
+  const runner = createWorkflowRunner({
+    executors: {
+      "control.merge": ({ inputs }) => {
+        observed.push(inputs.items);
+        return { outputs: { out: inputs.items } };
+      },
+    },
+  });
+  const source = (id: string, value: string) => ({
+    id,
+    kind: "json.string",
+    outputs: [port("value")],
+    data: { value },
+  });
+  const edge = (id: string, sourceNodeId: string) => ({
+    id,
+    sourceNodeId,
+    sourcePortId: "value",
+    targetNodeId: "merge",
+    targetPortId: "items",
+  });
+  const merge = {
+    id: "merge",
+    kind: "control.merge",
+    inputs: [port("items", { cardinality: { min: 1 } })],
+    outputs: [port("out")],
+  };
+
+  const many = await runner.dispatch({
+    runId: "merge-many",
+    workflow: {
+      format: "@moritzbrantner/workflow/compiled",
+      version: 1,
+      nodes: [source("a", "A"), source("b", "B"), source("c", "C"), merge],
+      edges: [edge("e-c", "c"), edge("e-a", "a"), edge("e-b", "b")],
+      order: ["a", "b", "c", "merge"],
+    },
+  });
+  const one = await runner.dispatch({
+    runId: "merge-one",
+    workflow: {
+      format: "@moritzbrantner/workflow/compiled",
+      version: 1,
+      nodes: [source("a", "A"), merge],
+      edges: [edge("e-a", "a")],
+      order: ["a", "merge"],
+    },
+  });
+
+  assert.equal(many.status, "succeeded");
+  assert.equal(one.status, "succeeded");
+  assert.deepEqual(observed, [["A", "B", "C"], ["A"]]);
+});

@@ -21,7 +21,7 @@ Related: #2.
 Status: implemented.
 
 - undeclared ordinary inputs retain single-value fan-in and ambiguous fan-in is rejected;
-- `cardinality.max: null` or `max > 1` opts an input into array aggregation;
+- a declared `cardinality` whose `max` is missing, `null` or `> 1` opts an input into array aggregation (missing `max` is unbounded, matching workflow-editor);
 - multi-value inputs use deterministic compiled edge-id ordering;
 - declared minimum cardinality and required inputs are checked against active runtime values before executor dispatch;
 - defaults apply only when no active value is present;

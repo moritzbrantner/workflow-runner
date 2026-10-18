@@ -295,11 +295,15 @@ function validateOrder(
   return order;
 }
 
+/**
+ * Ports without cardinality accept one connection. A declared cardinality without `max` is
+ * unbounded, matching the workflow-editor port-cardinality contract (e.g. `control.merge`).
+ */
 function maxForInput(port: ExecutableWorkflowPort): number | null {
-  if (port.cardinality?.max === null) {
-    return null;
+  if (port.cardinality === undefined) {
+    return 1;
   }
-  return port.cardinality?.max ?? 1;
+  return port.cardinality.max ?? null;
 }
 
 function maxForOutput(port: ExecutableWorkflowPort): number | null {
