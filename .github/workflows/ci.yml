@@ -17,8 +17,6 @@ jobs:
           bun-version: 1.3.14
       - run: bun install
       - run: bun run verify
-      - name: Intentional negative gate probe
-        run: exit 1
       - name: Check changed static site
         if: github.event_name == 'pull_request'
         env:
@@ -35,7 +33,7 @@ jobs:
           fi
 
   merge-ready:
-    name: merge-ready
+    name: missing-check-probe
     if: ${{ always() }}
     needs: [verify]
     runs-on: ubuntu-latest
