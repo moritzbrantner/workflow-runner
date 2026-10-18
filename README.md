@@ -155,3 +155,9 @@ To run selected nodes again, dispatch a new run with `rerun: { evidence, nodeIds
 - Any node without a recorded result runs normally.
 - A `run.rerun` event lists the reused and re-executed nodes.
 - Evidence from a different workflow version, or for a different input or context, fails with `invalid-rerun` before any executor runs. Stale results are never reused.
+
+## Live lifecycle observer
+
+`dispatch({ ..., onEvent })` calls the observer synchronously with each lifecycle event as it happens, for example `node.started` while an external operation is still running. The run still returns the complete `events` array, so callers without an observer are unaffected. An observer that throws never changes execution.
+
+Event payloads summarize streams and raw bytes. Hosts that keep observed events should still bound what they retain. Workflow Engine's adapter can forward events by passing its dispatch observer through: `runner.dispatch({ ...request, onEvent: observer?.onEvent })`.

@@ -105,6 +105,11 @@ export type WorkflowRunRequest = {
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
   signal?: AbortSignal;
+  /**
+   * Live lifecycle observer, called synchronously with each event as it happens. The same events
+   * are still returned in the terminal result. Observer exceptions are ignored.
+   */
+  onEvent?: (event: WorkflowRunEvent) => void;
   /** Simultaneous node executions for this run; overrides the runner default (TECH-012). */
   maxWorkers?: number;
   /**

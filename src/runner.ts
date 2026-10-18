@@ -268,7 +268,16 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
   ): Promise<WorkflowRunResult> => {
     const events: WorkflowRunEvent[] = [];
     const nodeResults: Record<string, WorkflowNodeResult> = {};
-    const emit = (event: WorkflowRunEvent) => events.push(event);
+    const emit = (event: WorkflowRunEvent) => {
+      events.push(event);
+      if (request.onEvent) {
+        try {
+          request.onEvent(event);
+        } catch {
+          // An observer failure never changes workflow execution (#26).
+        }
+      }
+    };
     const timestamp = () => now().toISOString();
     const diagnostics = validateExecutableWorkflow(request.workflow as unknown);
 
