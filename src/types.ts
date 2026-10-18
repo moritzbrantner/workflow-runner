@@ -56,6 +56,11 @@ export type ExecutableWorkflowNode = {
   iteration?: ExecutableWorkflowIteration;
   /** `on-completion` asks for the completed result to be persisted immediately (TECH-011). */
   persistence?: "on-completion";
+  /**
+   * Compiled human task contract (workflow-editor `human.task.approval` / `human.task.input`).
+   * Opaque to the runner beyond being forwarded in the suspension request; Engine validates responses.
+   */
+  humanTask?: unknown;
 };
 
 export type ExecutableWorkflowEdge = {

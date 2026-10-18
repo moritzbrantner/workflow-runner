@@ -37,5 +37,54 @@ export function createBuiltInExecutors(): Record<string, WorkflowNodeExecutor> {
     "json.boolean": ({ node }) => ({ outputs: { value: node.data?.value ?? false } }),
     "json.null": () => ({ outputs: { value: null } }),
     "json.array": ({ node, inputs }) => ({ outputs: { value: orderedArrayInputs(node, inputs) } }),
+    "human.task.approval": humanApproval,
+    "human.task.input": humanInput,
   };
 }
+
+function responseRecord(response: unknown): Record<string, unknown> {
+  if (typeof response !== "object" || response === null || Array.isArray(response)) {
+    throw new TypeError("The human task response must be an object.");
+  }
+  return response as Record<string, unknown>;
+}
+
+/**
+ * Approval step (workflow-editor `human.task.approval`, Engine TECH-001): suspends the run with the
+ * compiled task, then routes the `request` value to the output named by the response decision.
+ */
+const humanApproval: WorkflowNodeExecutor = ({ node, inputs, resume }) => {
+  if (!resume) {
+    return {
+      suspend: {
+        taskId: node.id,
+        request: { humanTask: node.humanTask ?? null, request: inputs.request ?? null },
+      },
+    };
+  }
+  const { decision } = responseRecord(resume.response);
+  if (decision !== "approved" && decision !== "rejected") {
+    throw new TypeError('The approval decision must be "approved" or "rejected".');
+  }
+  return { outputs: { [decision]: inputs.request } };
+};
+
+/** Typed human input step (`human.task.input`): suspends, then emits the response value. */
+const humanInput: WorkflowNodeExecutor = ({ node, inputs, resume }) => {
+  if (!resume) {
+    return {
+      suspend: {
+        taskId: node.id,
+        request: {
+          humanTask: node.humanTask ?? null,
+          ...(hasOwn(inputs, "context") ? { context: inputs.context } : {}),
+        },
+      },
+    };
+  }
+  const response = responseRecord(resume.response);
+  if (!hasOwn(response, "value")) {
+    throw new TypeError("The human input response needs a value.");
+  }
+  return { outputs: { value: response.value } };
+};
