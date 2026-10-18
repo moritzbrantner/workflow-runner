@@ -16,6 +16,7 @@ export type {
   ExecutableWorkflowNode,
   ExecutableWorkflowPort,
   ExecutableWorkflowPortCardinality,
+  WorkflowErrorCause,
   WorkflowExecutorPolicy,
   WorkflowExecutorRegistration,
   WorkflowExecutorRetryPolicy,

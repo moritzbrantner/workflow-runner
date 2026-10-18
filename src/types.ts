@@ -217,6 +217,13 @@ export type WorkflowRunnerTimers = {
   clearTimeout(handle: unknown): void;
 };
 
+/** JSON-safe description of a thrown executor exception. */
+export type WorkflowErrorCause = {
+  name: string;
+  message: string;
+  code?: string | number;
+};
+
 export type WorkflowRunError = {
   code:
     | "invalid-workflow"
@@ -238,7 +245,8 @@ export type WorkflowRunError = {
   message: string;
   nodeId?: string;
   attempt?: number;
-  cause?: unknown;
+  /** JSON-safe summary of the underlying exception, or the failing nested run's error. */
+  cause?: WorkflowErrorCause | WorkflowRunError;
   diagnostics?: WorkflowValidationDiagnostic[];
 };
 
