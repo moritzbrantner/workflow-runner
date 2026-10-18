@@ -192,3 +192,15 @@ The task ID is the node ID. When the run resumes:
 - A malformed response fails the waiting node.
 
 Workflow Engine validates typed responses before resuming (Engine TECH-001).
+
+## Workflow References (compiled version 3)
+
+Version 3 workflows carry a frozen `workflows` closure keyed `<documentId>@<version>` (workflow-editor TECH-005). A reference node with `workflowRef: { workflow, maxDepth? }` runs that definition:
+
+- **Inputs:** the node's inputs feed the definition's interface inputs, which are its `control.start` outputs, matched by port ID.
+- **Outputs:** the interface outputs, which are the `control.end` inputs, become the node's outputs. An end that never ran leaves that output inactive, so downstream branches are skipped.
+- **What runs:** nothing is looked up in a library at run time, and nested runs share the run's signal, workers and attempt budget.
+- **`maxDepth`:** bounds how many invocations of that definition can be nested at once, counting the outermost as 1. The invocation that would exceed it is never started, and the run fails with `reference-depth-exhausted`.
+- **Validation:** before execution, the runner rejects reference cycles without a finite `maxDepth` (`unbounded-recursive-reference`), unknown definitions, interface mismatches, and references outside version 3 (`invalid-workflow-reference`).
+
+Iteration bodies may expose `outputs.measurements`. Each iteration's result then reports `measurements` from the last completed iteration. Measurements are never used as a convergence or quality signal.

@@ -41,6 +41,8 @@ export type ExecutableWorkflowIteration = {
     outputs: {
       next: ExecutableWorkflowIterationBoundary;
       converged?: ExecutableWorkflowIterationBoundary;
+      /** Named values reported in `result.measurements` from the last completed iteration. */
+      measurements?: Array<ExecutableWorkflowIterationBoundary & { id: string; type?: unknown }>;
     };
   };
 };
@@ -61,6 +63,8 @@ export type ExecutableWorkflowNode = {
    * Opaque to the runner beyond being forwarded in the suspension request; Engine validates responses.
    */
   humanTask?: unknown;
+  /** Version 3: runs `workflows[workflow]`; `maxDepth` bounds nested invocations of it. */
+  workflowRef?: { workflow: string; maxDepth?: number };
 };
 
 export type ExecutableWorkflowEdge = {
@@ -71,13 +75,38 @@ export type ExecutableWorkflowEdge = {
   targetPortId: string;
 };
 
-export type ExecutableWorkflow = {
-  format: "@moritzbrantner/workflow/compiled";
-  /** 1 for plain DAGs; 2 when the workflow contains bounded iteration. */
-  version: 1 | 2;
+export type ExecutableWorkflowInterfacePort = {
+  id: string;
+  nodeId: string;
+  portId: string;
+  type?: unknown;
+};
+
+/** One resolved definition of the version-3 closure; its interface is start outputs / end inputs. */
+export type ExecutableWorkflowDefinition = {
+  id: string;
+  version: number;
   nodes: ExecutableWorkflowNode[];
   edges: ExecutableWorkflowEdge[];
   order: string[];
+  typeDeclarations?: string;
+  interface: {
+    inputs: ExecutableWorkflowInterfacePort[];
+    outputs: ExecutableWorkflowInterfacePort[];
+  };
+};
+
+export type ExecutableWorkflow = {
+  format: "@moritzbrantner/workflow/compiled";
+  /** 1 for plain DAGs; 2 adds bounded iteration; 3 adds the Workflow Reference closure. */
+  version: 1 | 2 | 3;
+  nodes: ExecutableWorkflowNode[];
+  edges: ExecutableWorkflowEdge[];
+  order: string[];
+  /** TypeScript declarations the compiled port types refer to (opaque to the runner). */
+  typeDeclarations?: string;
+  /** Version 3: frozen referenced definitions keyed `<documentId>@<version>` (editor TECH-005). */
+  workflows?: Record<string, ExecutableWorkflowDefinition>;
 };
 
 export type WorkflowValidationDiagnosticCode =
@@ -85,6 +114,8 @@ export type WorkflowValidationDiagnosticCode =
   | "unsupported-format"
   | "unsupported-version"
   | "invalid-iteration"
+  | "invalid-workflow-reference"
+  | "unbounded-recursive-reference"
   | "payload-mode-mismatch"
   | "nested-iteration-not-supported"
   | "duplicate-node-id"
@@ -249,6 +280,7 @@ export type WorkflowRunError = {
     | "invalid-run-options"
     | "invalid-rerun"
     | "persistence-failed"
+    | "reference-depth-exhausted"
     | "budget-exhausted"
     | "iteration-no-result"
     | "invalid-stream-output"
