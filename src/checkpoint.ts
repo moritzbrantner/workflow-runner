@@ -59,8 +59,8 @@ export function findCheckpointProblem(
   const waitingIndex = order.indexOf(waiting.nodeId);
   for (const [nodeId, result] of Object.entries(checkpoint.completed)) {
     const index = order.indexOf(nodeId);
-    if (index === -1 || index >= waitingIndex) {
-      return `Checkpoint completed node ${nodeId} is not before the waiting node.`;
+    if (index === -1 || index === waitingIndex) {
+      return `Checkpoint completed node ${nodeId} is unknown or is the waiting node.`;
     }
     if (
       !isRecord(result) ||

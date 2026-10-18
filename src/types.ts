@@ -65,6 +65,8 @@ export type WorkflowRunRequest = {
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
   signal?: AbortSignal;
+  /** Simultaneous node executions for this run; overrides the runner default (TECH-012). */
+  maxWorkers?: number;
   /** Continues a suspended run from its checkpoint, delivering the waiting task's response. */
   resume?: WorkflowRunResume;
 };
@@ -169,6 +171,7 @@ export type WorkflowRunError = {
   code:
     | "invalid-workflow"
     | "invalid-checkpoint"
+    | "invalid-run-options"
     | "input-not-ready"
     | "missing-executor"
     | "node-failed"
@@ -206,7 +209,7 @@ export type WorkflowNodeResult =
     };
 
 export type WorkflowRunEvent =
-  | { type: "run.started"; runId: string; timestamp: string }
+  | { type: "run.started"; runId: string; maxWorkers: number; timestamp: string }
   | { type: "node.started"; runId: string; nodeId: string; attempt: number; timestamp: string }
   | {
       type: "node.succeeded";
@@ -244,7 +247,14 @@ export type WorkflowRunEvent =
   | { type: "run.succeeded"; runId: string; timestamp: string; output: unknown }
   | { type: "run.failed"; runId: string; timestamp: string; error: WorkflowRunError }
   | { type: "run.cancelled"; runId: string; timestamp: string }
-  | { type: "run.resumed"; runId: string; nodeId: string; taskId: string; timestamp: string }
+  | {
+      type: "run.resumed";
+      runId: string;
+      nodeId: string;
+      taskId: string;
+      maxWorkers: number;
+      timestamp: string;
+    }
   | {
       type: "node.suspended";
       runId: string;
@@ -284,6 +294,8 @@ export type WorkflowRunnerOptions = {
   executors?: Readonly<Record<string, WorkflowNodeExecutor | WorkflowExecutorRegistration>>;
   now?: () => Date;
   timers?: WorkflowRunnerTimers;
+  /** Default simultaneous node executions per run; a positive whole number (default 4). */
+  maxWorkers?: number;
 };
 
 export type WorkflowRunner = {

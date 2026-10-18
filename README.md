@@ -85,3 +85,16 @@ The host or engine stores the checkpoint durably (Engine TECH-001). To continue 
 - A checkpoint for another run ID or a different compiled workflow fails with `invalid-checkpoint` before any executor runs.
 
 The runner defines no human-task node kinds. Those come from the compiled contract in Workflow Editor #105, implemented by host-registered executors.
+
+## Parallel execution
+
+Independent ready nodes run concurrently by default (TECH-012). A node starts as soon as all of its upstream nodes have finished, with no stage barrier. Ready nodes launch in compiled order.
+
+- **Worker limit:** `createWorkflowRunner({ maxWorkers })` sets the default number of simultaneous node executions per run. The built-in default is `defaultWorkflowRunnerMaxWorkers`, which is 4.
+- **Per-run override:** `dispatch({ ..., maxWorkers })` overrides the limit for that run.
+- **Scope:** each run enforces its own limit; there is no pool shared across runs.
+- **Sequential mode:** `1` runs nodes strictly one at a time.
+- **Invalid counts:** a value that is not a positive whole number is rejected (`invalid-run-options`).
+- **Evidence:** `run.started` and `run.resumed` record the effective `maxWorkers`.
+- **Ordering:** fan-in values keep compiled edge-ID order whatever the completion order, and branch skipping is unchanged.
+- **Failure and cancellation:** these launch no further nodes, abort in-flight attempts through their signal, and wait for them to settle. When a node suspends, other in-flight nodes finish first, and their results join the checkpoint.
