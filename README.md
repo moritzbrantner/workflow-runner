@@ -31,7 +31,7 @@ const result = await runner.dispatch({
 
 Runtime validation treats serialized input as untrusted even when TypeScript callers use `ExecutableWorkflow`. Malformed shapes, unsupported format/version values, duplicate ids or connections, missing nodes or ports, invalid DAG order, and invalid cardinality are rejected before executor dispatch. Port `type` metadata is required by compiled format v1 and is preserved as opaque compiler-owned metadata; runtime type compatibility remains an authoring/compiler concern.
 
-Ordinary input ports accept one connection. Explicit `cardinality.max: null` or `max > 1` opts a port into multi-value aggregation, with values ordered by compiled edge id. Declared minimum cardinality and required inputs are checked against active runtime values before the executor runs. Defaults apply only when an input has no active value. When every incoming edge is inactive, the existing branch-propagation rule skips the node.
+Input ports without `cardinality` accept one connection. A declared `cardinality` opts a port into multi-value aggregation unless its `max` is `1`; a missing `max` is unbounded, as in the workflow-editor contract (`control.merge` declares `{ min: 1 }`). Multi-value inputs receive an array, with values ordered by compiled edge id. Declared minimum cardinality and required inputs are checked against active runtime values before the executor runs. Defaults apply only when an input has no active value. When every incoming edge is inactive, the existing branch-propagation rule skips the node.
 
 Executor failures are not retried implicitly. Retry, timeout, and cancellation policy is an explicit runner-owned roadmap slice so hosts cannot accidentally repeat permanent or non-idempotent work.
 

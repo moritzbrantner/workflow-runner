@@ -39,8 +39,11 @@ function fail(
 }
 
 function isMultiValuePort(port: ExecutableWorkflowPort): boolean {
-  const max = port.cardinality?.max;
-  return max === null || (typeof max === "number" && max > 1);
+  if (port.cardinality === undefined) {
+    return false;
+  }
+  const max = port.cardinality.max;
+  return max === undefined || max === null || max > 1;
 }
 
 function runtimeMinimum(port: ExecutableWorkflowPort): number {
