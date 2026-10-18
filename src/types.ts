@@ -65,10 +65,45 @@ export type WorkflowRunRequest = {
   input?: Record<string, unknown>;
   context?: Record<string, unknown>;
   signal?: AbortSignal;
+  /** Continues a suspended run from its checkpoint, delivering the waiting task's response. */
+  resume?: WorkflowRunResume;
+};
+
+export type WorkflowRunResume = {
+  checkpoint: WorkflowRunCheckpoint;
+  response: unknown;
+};
+
+/** Pauses the run at this node until the host resumes it with a response. */
+export type WorkflowNodeSuspension = {
+  /** Host-meaningful task identity, unique within the run. */
+  taskId: string;
+  /** JSON-safe description of what the waiting task asks for. */
+  request?: unknown;
 };
 
 export type WorkflowNodeExecutionResult = {
   outputs?: Record<string, unknown>;
+  /** Suspends the run instead of completing the node; `outputs` is ignored. */
+  suspend?: WorkflowNodeSuspension;
+};
+
+export const workflowRunCheckpointFormat = "@moritzbrantner/workflow-runner/checkpoint" as const;
+
+/**
+ * JSON-safe continuation of a suspended run (Engine TECH-001). It pins the run and the exact
+ * compiled workflow, records completed node results so they are never re-executed, and names the
+ * waiting node and task.
+ */
+export type WorkflowRunCheckpoint = {
+  format: typeof workflowRunCheckpointFormat;
+  version: 1;
+  runId: string;
+  /** `sha256:<hex>` of the canonical JSON of the compiled workflow. */
+  workflowDigest: string;
+  waiting: WorkflowNodeSuspension & { nodeId: string; attempt: number };
+  /** Results of nodes that finished before the wait, keyed by node ID. */
+  completed: Record<string, Extract<WorkflowNodeResult, { status: "succeeded" | "skipped" }>>;
 };
 
 export type WorkflowNodeExecutorContext = {
@@ -81,6 +116,8 @@ export type WorkflowNodeExecutorContext = {
   context: Readonly<Record<string, unknown>>;
   /** Aborted when the run is cancelled or this attempt times out. */
   signal?: AbortSignal;
+  /** Present when this node is resumed after suspending: the host's response to its task. */
+  resume?: { taskId: string; request?: unknown; response: unknown };
 };
 
 export type WorkflowNodeExecutor = (
@@ -131,6 +168,7 @@ export type WorkflowRunnerTimers = {
 export type WorkflowRunError = {
   code:
     | "invalid-workflow"
+    | "invalid-checkpoint"
     | "input-not-ready"
     | "missing-executor"
     | "node-failed"
@@ -205,7 +243,17 @@ export type WorkflowRunEvent =
     }
   | { type: "run.succeeded"; runId: string; timestamp: string; output: unknown }
   | { type: "run.failed"; runId: string; timestamp: string; error: WorkflowRunError }
-  | { type: "run.cancelled"; runId: string; timestamp: string };
+  | { type: "run.cancelled"; runId: string; timestamp: string }
+  | { type: "run.resumed"; runId: string; nodeId: string; taskId: string; timestamp: string }
+  | {
+      type: "node.suspended";
+      runId: string;
+      nodeId: string;
+      attempt: number;
+      taskId: string;
+      timestamp: string;
+    }
+  | { type: "run.suspended"; runId: string; timestamp: string; checkpoint: WorkflowRunCheckpoint };
 
 export type WorkflowRunResult =
   | {
@@ -222,6 +270,12 @@ export type WorkflowRunResult =
     }
   | {
       status: "cancelled";
+      nodeResults: Record<string, WorkflowNodeResult>;
+      events: WorkflowRunEvent[];
+    }
+  | {
+      status: "suspended";
+      checkpoint: WorkflowRunCheckpoint;
       nodeResults: Record<string, WorkflowNodeResult>;
       events: WorkflowRunEvent[];
     };

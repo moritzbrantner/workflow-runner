@@ -6,17 +6,20 @@ import {
   type AttemptOutcome,
 } from "./attempts.js";
 import { createBuiltInExecutors } from "./builtins.js";
-import type {
-  ExecutableWorkflow,
-  ExecutableWorkflowEdge,
-  ExecutableWorkflowNode,
-  ExecutableWorkflowPort,
-  WorkflowExecutorRegistration,
-  WorkflowNodeResult,
-  WorkflowRunError,
-  WorkflowRunEvent,
-  WorkflowRunner,
-  WorkflowRunnerOptions,
+import { digestExecutableWorkflow, findCheckpointProblem } from "./checkpoint.js";
+import {
+  type ExecutableWorkflow,
+  type ExecutableWorkflowEdge,
+  type ExecutableWorkflowNode,
+  type ExecutableWorkflowPort,
+  type WorkflowExecutorRegistration,
+  type WorkflowNodeResult,
+  type WorkflowRunCheckpoint,
+  type WorkflowRunError,
+  type WorkflowRunEvent,
+  type WorkflowRunner,
+  type WorkflowRunnerOptions,
+  workflowRunCheckpointFormat,
 } from "./types.js";
 import { validateExecutableWorkflow } from "./validation.js";
 
@@ -231,9 +234,27 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         return { status: "failed", error, nodeResults, events };
       }
 
-      emit({ type: "run.started", runId: request.runId, timestamp: timestamp() });
-
       const workflow = request.workflow;
+      const resume = request.resume;
+      if (resume) {
+        const problem = findCheckpointProblem(resume.checkpoint, workflow, request.runId);
+        if (problem) {
+          const error = fail("invalid-checkpoint", problem);
+          emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
+          return { status: "failed", error, nodeResults, events };
+        }
+        Object.assign(nodeResults, structuredClone(resume.checkpoint.completed));
+        emit({
+          type: "run.resumed",
+          runId: request.runId,
+          nodeId: resume.checkpoint.waiting.nodeId,
+          taskId: resume.checkpoint.waiting.taskId,
+          timestamp: timestamp(),
+        });
+      } else {
+        emit({ type: "run.started", runId: request.runId, timestamp: timestamp() });
+      }
+
       const nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
       const incomingByNodeId = new Map<string, ExecutableWorkflowEdge[]>();
       for (const edge of workflow.edges) {
@@ -248,10 +269,24 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           return { status: "cancelled", nodeResults, events };
         }
 
+        if (nodeResults[nodeId]) {
+          // Restored from a checkpoint: completed work is never executed again.
+          continue;
+        }
         const node = nodeById.get(nodeId);
         if (!node) {
           throw new Error(`Validated workflow is missing node ${nodeId}.`);
         }
+        const resumeTask =
+          resume?.checkpoint.waiting.nodeId === nodeId
+            ? {
+                taskId: resume.checkpoint.waiting.taskId,
+                ...(resume.checkpoint.waiting.request === undefined
+                  ? {}
+                  : { request: resume.checkpoint.waiting.request }),
+                response: resume.response,
+              }
+            : undefined;
 
         const incomingEdges = incomingByNodeId.get(nodeId) ?? [];
         const built = buildInputs(node, incomingEdges, nodeResults);
@@ -340,6 +375,7 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
               inputs: built.inputs,
               workflowInput: request.input ?? {},
               context: request.context ?? {},
+              ...(resumeTask ? { resume: resumeTask } : {}),
             },
             request.signal,
             timers,
@@ -368,6 +404,39 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           if (!(await wait(timers, delayMs, request.signal))) {
             break;
           }
+        }
+
+        if (outcome?.kind === "succeeded" && outcome.result.suspend) {
+          const suspension = outcome.result.suspend;
+          const completed: WorkflowRunCheckpoint["completed"] = {};
+          for (const [completedId, result] of Object.entries(nodeResults)) {
+            if (result.status === "succeeded" || result.status === "skipped") {
+              completed[completedId] = structuredClone(result);
+            }
+          }
+          const checkpoint: WorkflowRunCheckpoint = {
+            format: workflowRunCheckpointFormat,
+            version: 1,
+            runId: request.runId,
+            workflowDigest: digestExecutableWorkflow(workflow),
+            waiting: {
+              nodeId,
+              taskId: suspension.taskId,
+              ...(suspension.request === undefined ? {} : { request: suspension.request }),
+              attempt,
+            },
+            completed,
+          };
+          emit({
+            type: "node.suspended",
+            runId: request.runId,
+            nodeId,
+            attempt,
+            taskId: suspension.taskId,
+            timestamp: timestamp(),
+          });
+          emit({ type: "run.suspended", runId: request.runId, timestamp: timestamp(), checkpoint });
+          return { status: "suspended", checkpoint, nodeResults, events };
         }
 
         if (outcome?.kind === "succeeded") {
