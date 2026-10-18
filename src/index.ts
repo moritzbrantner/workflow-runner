@@ -5,6 +5,8 @@ export { workflowRunCheckpointFormat } from "./types.js";
 export type {
   ExecutableWorkflow,
   ExecutableWorkflowEdge,
+  ExecutableWorkflowIteration,
+  ExecutableWorkflowIterationBoundary,
   ExecutableWorkflowNode,
   ExecutableWorkflowPort,
   ExecutableWorkflowPortCardinality,

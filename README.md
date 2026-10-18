@@ -98,3 +98,31 @@ Independent ready nodes run concurrently by default (TECH-012). A node starts as
 - **Evidence:** `run.started` and `run.resumed` record the effective `maxWorkers`.
 - **Ordering:** fan-in values keep compiled edge-ID order whatever the completion order, and branch skipping is unchanged.
 - **Failure and cancellation:** these launch no further nodes, abort in-flight attempts through their signal, and wait for them to settle. When a node suspends, other in-flight nodes finish first, and their results join the checkpoint.
+
+## Bounded iteration (compiled version 2)
+
+The runner executes workflow-editor's compiled-v2 `control.iterate` construct (see workflow-editor `docs/compiler.md`). Validation rejects the following before any executor runs:
+
+- a missing, non-finite or non-positive `maxIterations`;
+- malformed boundaries or body graphs;
+- nested iterations;
+- an iteration inside a version-1 workflow.
+
+Each iteration runs the body as a nested graph:
+
+- `state` and the invariant inputs are fed through the body boundaries.
+- The `next` output becomes the following state.
+- `node.iteration` events record each completed iteration and whether it converged.
+
+The result output is `{ status, value, iterations, maxIterations }`:
+
+- **`converged`:** the `converged` body output is `true`. Iteration stops immediately.
+- **`limit-exhausted`:** the bound was reached. The latest state is returned as an explicitly non-converged candidate, and no further iteration is started. `limit-only` iterations always end this way.
+
+These failures stay distinct and are never reported as partial results:
+
+- a body that produces no next state fails with `iteration-no-result`;
+- body failures fail the iteration node;
+- cancellation ends the run as `cancelled`.
+
+`maxNodeAttempts`, set on the runner or per run, is an optional run-wide budget of actual node execution attempts (TECH-006/007). It counts retries and nested body attempts and is charged before each attempt starts. When it is exhausted, the run fails with `budget-exhausted` and no further attempt starts. No default budget is imposed.

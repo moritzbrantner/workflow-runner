@@ -10,6 +10,8 @@ import { digestExecutableWorkflow, findCheckpointProblem } from "./checkpoint.js
 import {
   type ExecutableWorkflow,
   type ExecutableWorkflowEdge,
+  type ExecutableWorkflowIteration,
+  type ExecutableWorkflowIterationBoundary,
   type ExecutableWorkflowNode,
   type ExecutableWorkflowPort,
   type WorkflowExecutorRegistration,
@@ -17,6 +19,8 @@ import {
   type WorkflowRunCheckpoint,
   type WorkflowRunError,
   type WorkflowRunEvent,
+  type WorkflowRunRequest,
+  type WorkflowRunResult,
   type WorkflowRunner,
   type WorkflowRunnerOptions,
   workflowRunCheckpointFormat,
@@ -220,206 +224,215 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
     );
   }
 
-  return {
-    registerExecutor(kind, executor, policy) {
-      executors.set(kind, toRegistration(kind, executor, policy));
-    },
+  type SharedRunState = {
+    /** Remaining node execution attempts for the whole run, including nested work (TECH-007). */
+    budget: { remaining: number };
+    /** Pre-completed node results injected into a nested graph (iteration boundary values). */
+    seed?: Record<string, WorkflowNodeResult>;
+  };
 
-    async dispatch(request) {
-      const events: WorkflowRunEvent[] = [];
-      const nodeResults: Record<string, WorkflowNodeResult> = {};
-      const emit = (event: WorkflowRunEvent) => events.push(event);
-      const timestamp = () => now().toISOString();
-      const diagnostics = validateExecutableWorkflow(request.workflow as unknown);
+  const run = async (
+    request: WorkflowRunRequest,
+    shared: SharedRunState,
+  ): Promise<WorkflowRunResult> => {
+    const events: WorkflowRunEvent[] = [];
+    const nodeResults: Record<string, WorkflowNodeResult> = {};
+    const emit = (event: WorkflowRunEvent) => events.push(event);
+    const timestamp = () => now().toISOString();
+    const diagnostics = validateExecutableWorkflow(request.workflow as unknown);
 
-      if (diagnostics.length > 0) {
-        const error = fail(
-          "invalid-workflow",
-          `Compiled workflow validation failed with ${diagnostics.length} diagnostic${diagnostics.length === 1 ? "" : "s"}.`,
-          { diagnostics },
-        );
-        emit({
-          type: "run.failed",
-          runId: request.runId,
-          timestamp: timestamp(),
-          error,
-        });
-        return { status: "failed", error, nodeResults, events };
-      }
+    if (diagnostics.length > 0) {
+      const error = fail(
+        "invalid-workflow",
+        `Compiled workflow validation failed with ${diagnostics.length} diagnostic${diagnostics.length === 1 ? "" : "s"}.`,
+        { diagnostics },
+      );
+      emit({
+        type: "run.failed",
+        runId: request.runId,
+        timestamp: timestamp(),
+        error,
+      });
+      return { status: "failed", error, nodeResults, events };
+    }
 
-      const workflow = request.workflow;
-      const resume = request.resume;
-      const maxWorkers = request.maxWorkers ?? defaultMaxWorkers;
-      if (!isValidWorkerCount(maxWorkers)) {
-        const error = fail(
-          "invalid-run-options",
-          `maxWorkers must be a positive whole number; received ${String(maxWorkers)}.`,
-        );
+    const workflow = request.workflow;
+    const resume = request.resume;
+    const maxWorkers = request.maxWorkers ?? defaultMaxWorkers;
+    if (!isValidWorkerCount(maxWorkers)) {
+      const error = fail(
+        "invalid-run-options",
+        `maxWorkers must be a positive whole number; received ${String(maxWorkers)}.`,
+      );
+      emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
+      return { status: "failed", error, nodeResults, events };
+    }
+    if (resume) {
+      const problem = findCheckpointProblem(resume.checkpoint, workflow, request.runId);
+      if (problem) {
+        const error = fail("invalid-checkpoint", problem);
         emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
         return { status: "failed", error, nodeResults, events };
       }
-      if (resume) {
-        const problem = findCheckpointProblem(resume.checkpoint, workflow, request.runId);
-        if (problem) {
-          const error = fail("invalid-checkpoint", problem);
-          emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
-          return { status: "failed", error, nodeResults, events };
+      Object.assign(nodeResults, structuredClone(resume.checkpoint.completed));
+      emit({
+        type: "run.resumed",
+        runId: request.runId,
+        nodeId: resume.checkpoint.waiting.nodeId,
+        taskId: resume.checkpoint.waiting.taskId,
+        maxWorkers,
+        timestamp: timestamp(),
+      });
+    } else {
+      emit({ type: "run.started", runId: request.runId, maxWorkers, timestamp: timestamp() });
+    }
+
+    if (shared.seed) {
+      Object.assign(nodeResults, shared.seed);
+    }
+    const nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+    const incomingByNodeId = new Map<string, ExecutableWorkflowEdge[]>();
+    for (const edge of workflow.edges) {
+      const incoming = incomingByNodeId.get(edge.targetNodeId) ?? [];
+      incoming.push(edge);
+      incomingByNodeId.set(edge.targetNodeId, incoming);
+    }
+
+    // Stops in-flight work when the caller cancels or another node fails.
+    const runController = new AbortController();
+    const onCallerAbort = () => runController.abort(request.signal?.reason);
+    if (request.signal?.aborted) {
+      onCallerAbort();
+    }
+    request.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    const runSignal = runController.signal;
+
+    type NodeOutcome =
+      | { kind: "succeeded" }
+      | { kind: "failed"; error: WorkflowRunError }
+      | { kind: "cancelled" }
+      | { kind: "suspended"; checkpointWaiting: WorkflowRunCheckpoint["waiting"] };
+
+    const executeNode = async (
+      node: ExecutableWorkflowNode,
+      inputs: Record<string, unknown>,
+      executor: WorkflowExecutorRegistration,
+    ): Promise<NodeOutcome> => {
+      const nodeId = node.id;
+      const resumeTask =
+        resume?.checkpoint.waiting.nodeId === nodeId
+          ? {
+              taskId: resume.checkpoint.waiting.taskId,
+              ...(resume.checkpoint.waiting.request === undefined
+                ? {}
+                : { request: resume.checkpoint.waiting.request }),
+              response: resume.response,
+            }
+          : undefined;
+      const retry = executor.policy.retry;
+      const maxAttempts = retry?.maxAttempts ?? 1;
+      let outcome: AttemptOutcome | undefined;
+      let attempt = 0;
+      let budgetExhausted = false;
+      while (attempt < maxAttempts) {
+        if (attempt > 0 && runSignal.aborted) {
+          break;
         }
-        Object.assign(nodeResults, structuredClone(resume.checkpoint.completed));
+        if (shared.budget.remaining <= 0) {
+          budgetExhausted = true;
+          break;
+        }
+        shared.budget.remaining -= 1;
+        attempt += 1;
         emit({
-          type: "run.resumed",
+          type: "node.started",
           runId: request.runId,
-          nodeId: resume.checkpoint.waiting.nodeId,
-          taskId: resume.checkpoint.waiting.taskId,
-          maxWorkers,
+          nodeId,
+          attempt,
           timestamp: timestamp(),
         });
-      } else {
-        emit({ type: "run.started", runId: request.runId, maxWorkers, timestamp: timestamp() });
-      }
-
-      const nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
-      const incomingByNodeId = new Map<string, ExecutableWorkflowEdge[]>();
-      for (const edge of workflow.edges) {
-        const incoming = incomingByNodeId.get(edge.targetNodeId) ?? [];
-        incoming.push(edge);
-        incomingByNodeId.set(edge.targetNodeId, incoming);
-      }
-
-      // Stops in-flight work when the caller cancels or another node fails.
-      const runController = new AbortController();
-      const onCallerAbort = () => runController.abort(request.signal?.reason);
-      if (request.signal?.aborted) {
-        onCallerAbort();
-      }
-      request.signal?.addEventListener("abort", onCallerAbort, { once: true });
-      const runSignal = runController.signal;
-
-      type NodeOutcome =
-        | { kind: "succeeded" }
-        | { kind: "failed"; error: WorkflowRunError }
-        | { kind: "cancelled" }
-        | { kind: "suspended"; checkpointWaiting: WorkflowRunCheckpoint["waiting"] };
-
-      const executeNode = async (
-        node: ExecutableWorkflowNode,
-        inputs: Record<string, unknown>,
-        executor: WorkflowExecutorRegistration,
-      ): Promise<NodeOutcome> => {
-        const nodeId = node.id;
-        const resumeTask =
-          resume?.checkpoint.waiting.nodeId === nodeId
-            ? {
-                taskId: resume.checkpoint.waiting.taskId,
-                ...(resume.checkpoint.waiting.request === undefined
-                  ? {}
-                  : { request: resume.checkpoint.waiting.request }),
-                response: resume.response,
-              }
-            : undefined;
-        const retry = executor.policy.retry;
-        const maxAttempts = retry?.maxAttempts ?? 1;
-        let outcome: AttemptOutcome | undefined;
-        let attempt = 0;
-        while (attempt < maxAttempts) {
-          if (attempt > 0 && runSignal.aborted) {
-            break;
-          }
-          attempt += 1;
-          emit({
-            type: "node.started",
+        outcome = await runAttempt(
+          executor,
+          {
             runId: request.runId,
-            nodeId,
+            node,
             attempt,
-            timestamp: timestamp(),
-          });
-          outcome = await runAttempt(
-            executor,
-            {
-              runId: request.runId,
-              node,
-              attempt,
-              inputs,
-              workflowInput: request.input ?? {},
-              context: request.context ?? {},
-              ...(resumeTask ? { resume: resumeTask } : {}),
-            },
-            runSignal,
-            timers,
-          );
-          if (
-            outcome.kind === "succeeded" ||
-            outcome.kind === "cancelled" ||
-            outcome.kind === "termination-failed"
-          ) {
-            break;
-          }
-          const retryable = retry ? retry.isRetryable(outcome.cause, attempt) : false;
-          if (!retryable || attempt >= maxAttempts) {
-            break;
-          }
-          const delayMs = Math.max(0, retry?.backoffMs?.(attempt) ?? 0);
-          emit({
-            type: "node.retrying",
-            runId: request.runId,
-            nodeId,
-            attempt,
-            nextAttempt: attempt + 1,
-            delayMs,
-            reason: toErrorMessage(outcome.cause),
-            timestamp: timestamp(),
-          });
-          if (!(await wait(timers, delayMs, runSignal))) {
-            break;
-          }
+            inputs,
+            workflowInput: request.input ?? {},
+            context: request.context ?? {},
+            ...(resumeTask ? { resume: resumeTask } : {}),
+          },
+          runSignal,
+          timers,
+        );
+        if (
+          outcome.kind === "succeeded" ||
+          outcome.kind === "cancelled" ||
+          outcome.kind === "termination-failed"
+        ) {
+          break;
         }
-
-        if (outcome?.kind === "succeeded" && outcome.result.suspend) {
-          const suspension = outcome.result.suspend;
-          emit({
-            type: "node.suspended",
-            runId: request.runId,
-            nodeId,
-            attempt,
-            taskId: suspension.taskId,
-            timestamp: timestamp(),
-          });
-          return {
-            kind: "suspended",
-            checkpointWaiting: {
-              nodeId,
-              taskId: suspension.taskId,
-              ...(suspension.request === undefined ? {} : { request: suspension.request }),
-              attempt,
-            },
-          };
+        const retryable = retry ? retry.isRetryable(outcome.cause, attempt) : false;
+        if (!retryable || attempt >= maxAttempts) {
+          break;
         }
-
-        if (outcome?.kind === "succeeded") {
-          const outputs = outcome.result.outputs ?? {};
-          nodeResults[nodeId] = { status: "succeeded", attempts: attempt, inputs, outputs };
-          emit({
-            type: "node.succeeded",
-            runId: request.runId,
-            nodeId,
-            attempt,
-            timestamp: timestamp(),
-            outputs,
-          });
-          return { kind: "succeeded" };
-        }
-
-        const cancelled = outcome?.kind === "cancelled" || runSignal.aborted;
-        const error = describeAttemptFailure(nodeId, attempt, outcome, cancelled, {
-          retryable:
-            outcome !== undefined &&
-            "cause" in outcome &&
-            outcome.kind !== "cancelled" &&
-            retry !== undefined &&
-            attempt >= maxAttempts &&
-            maxAttempts > 1 &&
-            retry.isRetryable(outcome.cause, attempt),
+        const delayMs = Math.max(0, retry?.backoffMs?.(attempt) ?? 0);
+        emit({
+          type: "node.retrying",
+          runId: request.runId,
+          nodeId,
+          attempt,
+          nextAttempt: attempt + 1,
+          delayMs,
+          reason: toErrorMessage(outcome.cause),
+          timestamp: timestamp(),
         });
+        if (!(await wait(timers, delayMs, runSignal))) {
+          break;
+        }
+      }
+
+      if (outcome?.kind === "succeeded" && outcome.result.suspend) {
+        const suspension = outcome.result.suspend;
+        emit({
+          type: "node.suspended",
+          runId: request.runId,
+          nodeId,
+          attempt,
+          taskId: suspension.taskId,
+          timestamp: timestamp(),
+        });
+        return {
+          kind: "suspended",
+          checkpointWaiting: {
+            nodeId,
+            taskId: suspension.taskId,
+            ...(suspension.request === undefined ? {} : { request: suspension.request }),
+            attempt,
+          },
+        };
+      }
+
+      if (outcome?.kind === "succeeded") {
+        const outputs = outcome.result.outputs ?? {};
+        nodeResults[nodeId] = { status: "succeeded", attempts: attempt, inputs, outputs };
+        emit({
+          type: "node.succeeded",
+          runId: request.runId,
+          nodeId,
+          attempt,
+          timestamp: timestamp(),
+          outputs,
+        });
+        return { kind: "succeeded" };
+      }
+
+      if (budgetExhausted) {
+        const error = fail(
+          "budget-exhausted",
+          `Run-wide node attempt budget is exhausted; node ${nodeId} attempt ${attempt + 1} was not started.`,
+          { nodeId, attempt: attempt + 1 },
+        );
         nodeResults[nodeId] = { status: "failed", attempts: attempt, inputs, outputs: {}, error };
         emit({
           type: "node.failed",
@@ -429,174 +442,398 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           timestamp: timestamp(),
           error,
         });
-        return cancelled ? { kind: "cancelled" } : { kind: "failed", error };
+        return { kind: "failed", error };
+      }
+      const cancelled = outcome?.kind === "cancelled" || runSignal.aborted;
+      const error = describeAttemptFailure(nodeId, attempt, outcome, cancelled, {
+        retryable:
+          outcome !== undefined &&
+          "cause" in outcome &&
+          outcome.kind !== "cancelled" &&
+          retry !== undefined &&
+          attempt >= maxAttempts &&
+          maxAttempts > 1 &&
+          retry.isRetryable(outcome.cause, attempt),
+      });
+      nodeResults[nodeId] = { status: "failed", attempts: attempt, inputs, outputs: {}, error };
+      emit({
+        type: "node.failed",
+        runId: request.runId,
+        nodeId,
+        attempt,
+        timestamp: timestamp(),
+        error,
+      });
+      return cancelled ? { kind: "cancelled" } : { kind: "failed", error };
+    };
+
+    /** Runs a compiled-v2 bounded iteration (TECH-002/006/007); the body is a nested graph run. */
+    const executeIteration = async (
+      node: ExecutableWorkflowNode,
+      iteration: ExecutableWorkflowIteration,
+      inputs: Record<string, unknown>,
+    ): Promise<NodeOutcome> => {
+      const nodeId = node.id;
+      const finish = (error: WorkflowRunError): NodeOutcome => {
+        nodeResults[nodeId] = { status: "failed", attempts: 1, inputs, outputs: {}, error };
+        emit({
+          type: "node.failed",
+          runId: request.runId,
+          nodeId,
+          attempt: 1,
+          timestamp: timestamp(),
+          error,
+        });
+        return error.code === "node-cancelled" ? { kind: "cancelled" } : { kind: "failed", error };
+      };
+      emit({
+        type: "node.started",
+        runId: request.runId,
+        nodeId,
+        attempt: 1,
+        timestamp: timestamp(),
+      });
+      let state = inputs.state;
+      let status: "converged" | "limit-exhausted" = "limit-exhausted";
+      let iterations = 0;
+      const seedNodeId = "@iteration-input";
+      const body = iteration.body;
+      const boundaryIds = [...new Set(body.inputs.map((input) => input.id))];
+      const bodyWorkflow: ExecutableWorkflow = {
+        format: workflow.format,
+        version: 1,
+        nodes: [
+          {
+            id: seedNodeId,
+            kind: seedNodeId,
+            outputs: boundaryIds.map((id) => ({ id, type: { kind: "any" } })),
+          },
+          ...body.nodes,
+        ],
+        edges: [
+          ...body.inputs.map((input, index) => ({
+            id: `@iteration-input-${index}`,
+            sourceNodeId: seedNodeId,
+            sourcePortId: input.id,
+            targetNodeId: input.nodeId,
+            targetPortId: input.portId,
+          })),
+          ...body.edges,
+        ],
+        order: [seedNodeId, ...body.order],
       };
 
-      type Stop =
-        | { kind: "failed"; error: WorkflowRunError }
-        | { kind: "cancelled" }
-        | { kind: "suspended"; waiting: WorkflowRunCheckpoint["waiting"] };
-      let stop: Stop | undefined;
-      const pending = workflow.order.filter((nodeId) => !nodeResults[nodeId]);
-      const running = new Map<string, Promise<{ nodeId: string; outcome: NodeOutcome }>>();
-      const isReady = (nodeId: string) =>
-        (incomingByNodeId.get(nodeId) ?? []).every((edge) => nodeResults[edge.sourceNodeId]);
-
-      // Launch ready nodes in compiled order, up to this run's worker limit (TECH-012).
-      const launchReadyNodes = () => {
-        let progressed = true;
-        while (progressed && !stop) {
-          progressed = false;
-          for (const nodeId of pending.slice()) {
-            if (stop || running.size >= maxWorkers) {
-              return;
-            }
-            if (!isReady(nodeId)) {
-              continue;
-            }
-            pending.splice(pending.indexOf(nodeId), 1);
-            progressed = true;
-            const node = nodeById.get(nodeId);
-            if (!node) {
-              throw new Error(`Validated workflow is missing node ${nodeId}.`);
-            }
-            const incomingEdges = incomingByNodeId.get(nodeId) ?? [];
-            const built = buildInputs(node, incomingEdges, nodeResults);
-            if (incomingEdges.length > 0 && built.activeEdgeCount === 0) {
-              nodeResults[nodeId] = {
-                status: "skipped",
-                attempts: 0,
-                inputs: built.inputs,
-                outputs: {},
-                reason: "inactive-inputs",
-              };
-              emit({
-                type: "node.skipped",
-                runId: request.runId,
-                nodeId,
-                timestamp: timestamp(),
-                reason: "inactive-inputs",
-              });
-              continue;
-            }
-            if (built.error) {
-              nodeResults[nodeId] = {
-                status: "failed",
-                attempts: 0,
-                inputs: built.inputs,
-                outputs: {},
-                error: built.error,
-              };
-              emit({
-                type: "node.failed",
-                runId: request.runId,
-                nodeId,
-                attempt: 0,
-                timestamp: timestamp(),
-                error: built.error,
-              });
-              stop = { kind: "failed", error: built.error };
-              return;
-            }
-            const executor = executors.get(node.kind);
-            if (!executor) {
-              const error = fail(
-                "missing-executor",
-                `No executor is registered for workflow node kind ${node.kind}.`,
-                { nodeId },
-              );
-              nodeResults[nodeId] = {
-                status: "failed",
-                attempts: 0,
-                inputs: built.inputs,
-                outputs: {},
-                error,
-              };
-              stop = { kind: "failed", error };
-              return;
-            }
-            running.set(
-              nodeId,
-              executeNode(node, built.inputs, executor).then((outcome) => ({ nodeId, outcome })),
-            );
-          }
+      while (iterations < iteration.maxIterations) {
+        if (runSignal.aborted) {
+          return finish(fail("node-cancelled", `Node ${nodeId} was cancelled.`, { nodeId }));
         }
-      };
+        const boundaryValues: Record<string, unknown> = { ...inputs, state };
+        const bodyResult = await run(
+          {
+            runId: request.runId,
+            workflow: bodyWorkflow,
+            ...(request.input ? { input: request.input } : {}),
+            ...(request.context ? { context: request.context } : {}),
+            signal: runSignal,
+            maxWorkers,
+          },
+          {
+            budget: shared.budget,
+            seed: {
+              [seedNodeId]: {
+                status: "succeeded",
+                attempts: 0,
+                inputs: {},
+                outputs: Object.fromEntries(boundaryIds.map((id) => [id, boundaryValues[id]])),
+              },
+            },
+          },
+        );
+        if (bodyResult.status === "cancelled") {
+          return finish(fail("node-cancelled", `Node ${nodeId} was cancelled.`, { nodeId }));
+        }
+        if (bodyResult.status === "suspended") {
+          return finish(
+            fail(
+              "node-failed",
+              `Node ${nodeId}: suspension inside an iteration body is not supported.`,
+              {
+                nodeId,
+              },
+            ),
+          );
+        }
+        if (bodyResult.status === "failed") {
+          const code =
+            bodyResult.error.code === "budget-exhausted" ? "budget-exhausted" : "node-failed";
+          return finish(
+            fail(
+              code,
+              `Node ${nodeId} iteration ${iterations + 1} failed: ${bodyResult.error.message}`,
+              {
+                nodeId,
+                attempt: 1,
+                cause: bodyResult.error,
+              },
+            ),
+          );
+        }
+        const read = (boundary: ExecutableWorkflowIterationBoundary | undefined) => {
+          const result = boundary ? bodyResult.nodeResults[boundary.nodeId] : undefined;
+          return boundary &&
+            result?.status === "succeeded" &&
+            hasOwn(result.outputs, boundary.portId)
+            ? { value: result.outputs[boundary.portId] }
+            : undefined;
+        };
+        const next = read(body.outputs.next);
+        if (!next) {
+          return finish(
+            fail(
+              "iteration-no-result",
+              `Node ${nodeId} iteration ${iterations + 1} produced no next state.`,
+              { nodeId },
+            ),
+          );
+        }
+        iterations += 1;
+        state = next.value;
+        const converged =
+          iteration.stop.kind === "body-output" && read(body.outputs.converged)?.value === true;
+        emit({
+          type: "node.iteration",
+          runId: request.runId,
+          nodeId,
+          iteration: iterations,
+          converged,
+          timestamp: timestamp(),
+        });
+        if (converged) {
+          status = "converged";
+          break;
+        }
+      }
 
-      try {
-        while (true) {
-          if (!stop && request.signal?.aborted) {
-            stop = { kind: "cancelled" };
+      const outputs = {
+        [iteration.result.outputPortId]: {
+          status,
+          value: state,
+          iterations,
+          maxIterations: iteration.maxIterations,
+        },
+      };
+      nodeResults[nodeId] = { status: "succeeded", attempts: 1, inputs, outputs };
+      emit({
+        type: "node.succeeded",
+        runId: request.runId,
+        nodeId,
+        attempt: 1,
+        timestamp: timestamp(),
+        outputs,
+      });
+      return { kind: "succeeded" };
+    };
+
+    type Stop =
+      | { kind: "failed"; error: WorkflowRunError }
+      | { kind: "cancelled" }
+      | { kind: "suspended"; waiting: WorkflowRunCheckpoint["waiting"] };
+    let stop: Stop | undefined;
+    const pending = workflow.order.filter((nodeId) => !nodeResults[nodeId]);
+    const running = new Map<string, Promise<{ nodeId: string; outcome: NodeOutcome }>>();
+    const isReady = (nodeId: string) =>
+      (incomingByNodeId.get(nodeId) ?? []).every((edge) => nodeResults[edge.sourceNodeId]);
+
+    // Launch ready nodes in compiled order, up to this run's worker limit (TECH-012).
+    const launchReadyNodes = () => {
+      let progressed = true;
+      while (progressed && !stop) {
+        progressed = false;
+        for (const nodeId of pending.slice()) {
+          if (stop || running.size >= maxWorkers) {
+            return;
           }
-          if (!stop) {
-            launchReadyNodes();
-          }
-          if (stop && stop.kind !== "suspended" && !runSignal.aborted) {
-            // A failed run starts no new work and stops what is still in flight.
-            runController.abort(new Error("Workflow run stopped."));
-          }
-          const next = running.values().next();
-          if (next.done) {
-            break;
-          }
-          const { nodeId, outcome } = await Promise.race(running.values());
-          running.delete(nodeId);
-          if (stop) {
+          if (!isReady(nodeId)) {
             continue;
           }
-          if (outcome.kind === "failed") {
-            stop = { kind: "failed", error: outcome.error };
-          } else if (outcome.kind === "cancelled") {
-            stop = { kind: "cancelled" };
-          } else if (outcome.kind === "suspended") {
-            // Let in-flight nodes finish so their results join the checkpoint.
-            stop = { kind: "suspended", waiting: outcome.checkpointWaiting };
+          pending.splice(pending.indexOf(nodeId), 1);
+          progressed = true;
+          const node = nodeById.get(nodeId);
+          if (!node) {
+            throw new Error(`Validated workflow is missing node ${nodeId}.`);
           }
-        }
-      } finally {
-        request.signal?.removeEventListener("abort", onCallerAbort);
-      }
-
-      if (stop?.kind === "cancelled") {
-        emit({ type: "run.cancelled", runId: request.runId, timestamp: timestamp() });
-        return { status: "cancelled", nodeResults, events };
-      }
-      if (stop?.kind === "failed") {
-        emit({
-          type: "run.failed",
-          runId: request.runId,
-          timestamp: timestamp(),
-          error: stop.error,
-        });
-        return { status: "failed", error: stop.error, nodeResults, events };
-      }
-      if (stop?.kind === "suspended") {
-        const completed: WorkflowRunCheckpoint["completed"] = {};
-        for (const [completedId, result] of Object.entries(nodeResults)) {
-          if (result.status === "succeeded" || result.status === "skipped") {
-            completed[completedId] = structuredClone(result);
+          const incomingEdges = incomingByNodeId.get(nodeId) ?? [];
+          const built = buildInputs(node, incomingEdges, nodeResults);
+          if (incomingEdges.length > 0 && built.activeEdgeCount === 0) {
+            nodeResults[nodeId] = {
+              status: "skipped",
+              attempts: 0,
+              inputs: built.inputs,
+              outputs: {},
+              reason: "inactive-inputs",
+            };
+            emit({
+              type: "node.skipped",
+              runId: request.runId,
+              nodeId,
+              timestamp: timestamp(),
+              reason: "inactive-inputs",
+            });
+            continue;
           }
+          if (built.error) {
+            nodeResults[nodeId] = {
+              status: "failed",
+              attempts: 0,
+              inputs: built.inputs,
+              outputs: {},
+              error: built.error,
+            };
+            emit({
+              type: "node.failed",
+              runId: request.runId,
+              nodeId,
+              attempt: 0,
+              timestamp: timestamp(),
+              error: built.error,
+            });
+            stop = { kind: "failed", error: built.error };
+            return;
+          }
+          if (node.kind === "control.iterate" && node.iteration) {
+            const iteration = node.iteration;
+            running.set(
+              nodeId,
+              executeIteration(node, iteration, built.inputs).then((outcome) => ({
+                nodeId,
+                outcome,
+              })),
+            );
+            continue;
+          }
+          const executor = executors.get(node.kind);
+          if (!executor) {
+            const error = fail(
+              "missing-executor",
+              `No executor is registered for workflow node kind ${node.kind}.`,
+              { nodeId },
+            );
+            nodeResults[nodeId] = {
+              status: "failed",
+              attempts: 0,
+              inputs: built.inputs,
+              outputs: {},
+              error,
+            };
+            stop = { kind: "failed", error };
+            return;
+          }
+          running.set(
+            nodeId,
+            executeNode(node, built.inputs, executor).then((outcome) => ({ nodeId, outcome })),
+          );
         }
-        const checkpoint: WorkflowRunCheckpoint = {
-          format: workflowRunCheckpointFormat,
-          version: 1,
-          runId: request.runId,
-          workflowDigest: digestExecutableWorkflow(workflow),
-          waiting: stop.waiting,
-          completed,
-        };
-        emit({ type: "run.suspended", runId: request.runId, timestamp: timestamp(), checkpoint });
-        return { status: "suspended", checkpoint, nodeResults, events };
       }
+    };
 
-      const output = resolveRunOutput(workflow, nodeResults);
+    try {
+      while (true) {
+        if (!stop && request.signal?.aborted) {
+          stop = { kind: "cancelled" };
+        }
+        if (!stop) {
+          launchReadyNodes();
+        }
+        if (stop && stop.kind !== "suspended" && !runSignal.aborted) {
+          // A failed run starts no new work and stops what is still in flight.
+          runController.abort(new Error("Workflow run stopped."));
+        }
+        const next = running.values().next();
+        if (next.done) {
+          break;
+        }
+        const { nodeId, outcome } = await Promise.race(running.values());
+        running.delete(nodeId);
+        if (stop) {
+          continue;
+        }
+        if (outcome.kind === "failed") {
+          stop = { kind: "failed", error: outcome.error };
+        } else if (outcome.kind === "cancelled") {
+          stop = { kind: "cancelled" };
+        } else if (outcome.kind === "suspended") {
+          // Let in-flight nodes finish so their results join the checkpoint.
+          stop = { kind: "suspended", waiting: outcome.checkpointWaiting };
+        }
+      }
+    } finally {
+      request.signal?.removeEventListener("abort", onCallerAbort);
+    }
+
+    if (stop?.kind === "cancelled") {
+      emit({ type: "run.cancelled", runId: request.runId, timestamp: timestamp() });
+      return { status: "cancelled", nodeResults, events };
+    }
+    if (stop?.kind === "failed") {
       emit({
-        type: "run.succeeded",
+        type: "run.failed",
         runId: request.runId,
         timestamp: timestamp(),
-        output,
+        error: stop.error,
       });
-      return { status: "succeeded", output, nodeResults, events };
+      return { status: "failed", error: stop.error, nodeResults, events };
+    }
+    if (stop?.kind === "suspended") {
+      const completed: WorkflowRunCheckpoint["completed"] = {};
+      for (const [completedId, result] of Object.entries(nodeResults)) {
+        if (result.status === "succeeded" || result.status === "skipped") {
+          completed[completedId] = structuredClone(result);
+        }
+      }
+      const checkpoint: WorkflowRunCheckpoint = {
+        format: workflowRunCheckpointFormat,
+        version: 1,
+        runId: request.runId,
+        workflowDigest: digestExecutableWorkflow(workflow),
+        waiting: stop.waiting,
+        completed,
+      };
+      emit({ type: "run.suspended", runId: request.runId, timestamp: timestamp(), checkpoint });
+      return { status: "suspended", checkpoint, nodeResults, events };
+    }
+
+    const output = resolveRunOutput(workflow, nodeResults);
+    emit({
+      type: "run.succeeded",
+      runId: request.runId,
+      timestamp: timestamp(),
+      output,
+    });
+    return { status: "succeeded", output, nodeResults, events };
+  };
+
+  return {
+    registerExecutor(kind, executor, policy) {
+      executors.set(kind, toRegistration(kind, executor, policy));
+    },
+
+    dispatch(request) {
+      const budget = request.maxNodeAttempts ?? options.maxNodeAttempts;
+      if (budget !== undefined && !isValidWorkerCount(budget)) {
+        const error = fail(
+          "invalid-run-options",
+          `maxNodeAttempts must be a positive whole number; received ${String(budget)}.`,
+        );
+        return Promise.resolve({
+          status: "failed",
+          error,
+          nodeResults: {},
+          events: [
+            { type: "run.failed", runId: request.runId, timestamp: now().toISOString(), error },
+          ],
+        });
+      }
+      return run(request, { budget: { remaining: budget ?? Number.POSITIVE_INFINITY } });
     },
   };
 }
