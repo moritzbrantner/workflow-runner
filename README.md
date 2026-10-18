@@ -177,3 +177,18 @@ The runner then behaves as follows:
 - **Failed or impossible write:** a rejected write, or a result that isn't JSON-safe, fails the node with `persistence-failed`, and it is never reported durable.
 - **No handler:** without a handler, or for nodes without the setting, behaviour is unchanged.
 - **After a lost run:** if a run is lost before terminal persistence, `createWorkflowRunEvidenceFromRecords(records)` rebuilds rerun evidence from the acknowledged top-level records. Those results are reused by a selective rerun and are not executed again.
+
+## Human tasks
+
+The built-in `human.task.approval` and `human.task.input` executors implement the compiled human task contract from workflow-editor #105. They suspend the run with a request of the following shape:
+
+- approval tasks: `{ humanTask, request }`;
+- input tasks: `{ humanTask, context? }`.
+
+The task ID is the node ID. When the run resumes:
+
+- An approval response `{ decision: "approved" | "rejected" }` routes the `request` value to the output named by the decision.
+- An input response `{ value }` emits `value` on the `value` output.
+- A malformed response fails the waiting node.
+
+Workflow Engine validates typed responses before resuming (Engine TECH-001).

@@ -1,0 +1,149 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "expense",
+      "label": "Expense",
+      "kind": "data.value",
+      "outputs": [
+        {
+          "id": "value",
+          "type": {
+            "kind": "typescript",
+            "source": "Expense"
+          }
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "label": "Manager review",
+      "kind": "human.task.approval",
+      "inputs": [
+        {
+          "id": "request",
+          "type": {
+            "kind": "any"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "approved",
+          "type": {
+            "kind": "typescript",
+            "source": "Expense"
+          }
+        },
+        {
+          "id": "rejected",
+          "type": {
+            "kind": "typescript",
+            "source": "Expense"
+          }
+        }
+      ],
+      "data": {
+        "prompt": "Approve this expense?"
+      },
+      "humanTask": {
+        "kind": "approval",
+        "prompt": "Approve this expense?",
+        "outcomes": ["approved", "rejected"]
+      }
+    },
+    {
+      "id": "correct",
+      "label": "Corrected amount",
+      "kind": "human.task.input",
+      "inputs": [
+        {
+          "id": "context",
+          "type": {
+            "kind": "any"
+          },
+          "optional": true
+        }
+      ],
+      "outputs": [
+        {
+          "id": "value",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ],
+      "data": {
+        "prompt": "Enter the corrected amount."
+      },
+      "humanTask": {
+        "kind": "input",
+        "prompt": "Enter the corrected amount.",
+        "responseType": {
+          "kind": "typescript",
+          "source": "number"
+        }
+      }
+    },
+    {
+      "id": "pay",
+      "label": "Pay",
+      "kind": "finance.pay",
+      "inputs": [
+        {
+          "id": "in",
+          "type": {
+            "kind": "any"
+          }
+        }
+      ]
+    },
+    {
+      "id": "record",
+      "label": "Record",
+      "kind": "finance.record",
+      "inputs": [
+        {
+          "id": "in",
+          "type": {
+            "kind": "any"
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "correct-record",
+      "sourceNodeId": "correct",
+      "sourcePortId": "value",
+      "targetNodeId": "record",
+      "targetPortId": "in"
+    },
+    {
+      "id": "expense-review",
+      "sourceNodeId": "expense",
+      "sourcePortId": "value",
+      "targetNodeId": "review",
+      "targetPortId": "request"
+    },
+    {
+      "id": "review-correct",
+      "sourceNodeId": "review",
+      "sourcePortId": "rejected",
+      "targetNodeId": "correct",
+      "targetPortId": "context"
+    },
+    {
+      "id": "review-pay",
+      "sourceNodeId": "review",
+      "sourcePortId": "approved",
+      "targetNodeId": "pay",
+      "targetPortId": "in"
+    }
+  ],
+  "order": ["expense", "review", "correct", "pay", "record"],
+  "typeDeclarations": "type Expense = { id: string; amount: number };"
+}
