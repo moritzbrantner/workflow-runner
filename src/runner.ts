@@ -1,10 +1,17 @@
+import {
+  defaultWorkflowRunnerTimers,
+  runAttempt,
+  toRegistration,
+  wait,
+  type AttemptOutcome,
+} from "./attempts.js";
 import { createBuiltInExecutors } from "./builtins.js";
 import type {
   ExecutableWorkflow,
   ExecutableWorkflowEdge,
   ExecutableWorkflowNode,
   ExecutableWorkflowPort,
-  WorkflowNodeExecutor,
+  WorkflowExecutorRegistration,
   WorkflowNodeResult,
   WorkflowRunError,
   WorkflowRunEvent,
@@ -144,15 +151,62 @@ function resolveRunOutput(
   );
 }
 
+function describeAttemptFailure(
+  nodeId: string,
+  attempt: number,
+  outcome: AttemptOutcome | undefined,
+  cancelled: boolean,
+  { retryable }: { retryable: boolean },
+): WorkflowRunError {
+  const options = {
+    nodeId,
+    attempt,
+    ...(outcome && "cause" in outcome ? { cause: outcome.cause } : {}),
+  };
+  if (cancelled) {
+    return fail(
+      "node-cancelled",
+      `Node ${nodeId} was cancelled during attempt ${attempt}.`,
+      options,
+    );
+  }
+  if (outcome?.kind === "timed-out") {
+    return fail(
+      "node-timed-out",
+      `Node ${nodeId} attempt ${attempt}: ${outcome.cause.message}`,
+      options,
+    );
+  }
+  if (outcome?.kind === "termination-failed") {
+    return fail(
+      "node-termination-failed",
+      `Node ${nodeId} attempt ${attempt} could not be terminated: ${toErrorMessage(outcome.cause)}`,
+      options,
+    );
+  }
+  const message = outcome && "cause" in outcome ? toErrorMessage(outcome.cause) : "unknown failure";
+  if (retryable) {
+    return fail(
+      "retries-exhausted",
+      `Node ${nodeId} failed after ${attempt} attempts: ${message}`,
+      options,
+    );
+  }
+  return fail("node-failed", `Node ${nodeId} failed: ${message}`, options);
+}
+
 export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): WorkflowRunner {
-  const executors = new Map<string, WorkflowNodeExecutor>(
-    Object.entries({ ...createBuiltInExecutors(), ...(options.executors ?? {}) }),
+  const executors = new Map<string, WorkflowExecutorRegistration>(
+    Object.entries({ ...createBuiltInExecutors(), ...(options.executors ?? {}) }).map(
+      ([kind, executor]) => [kind, toRegistration(kind, executor)] as const,
+    ),
   );
   const now = options.now ?? (() => new Date());
+  const timers = options.timers ?? defaultWorkflowRunnerTimers;
 
   return {
-    registerExecutor(kind, executor) {
-      executors.set(kind, executor);
+    registerExecutor(kind, executor, policy) {
+      executors.set(kind, toRegistration(kind, executor, policy));
     },
 
     async dispatch(request) {
@@ -261,26 +315,66 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
           return { status: "failed", error, nodeResults, events };
         }
 
-        emit({
-          type: "node.started",
-          runId: request.runId,
-          nodeId,
-          attempt: 1,
-          timestamp: timestamp(),
-        });
-        try {
-          const result = await executor({
+        const retry = executor.policy.retry;
+        const maxAttempts = retry?.maxAttempts ?? 1;
+        let outcome: AttemptOutcome | undefined;
+        let attempt = 0;
+        while (attempt < maxAttempts) {
+          if (attempt > 0 && request.signal?.aborted) {
+            break;
+          }
+          attempt += 1;
+          emit({
+            type: "node.started",
             runId: request.runId,
-            node,
-            inputs: built.inputs,
-            workflowInput: request.input ?? {},
-            context: request.context ?? {},
-            ...(request.signal ? { signal: request.signal } : {}),
+            nodeId,
+            attempt,
+            timestamp: timestamp(),
           });
-          const outputs = result.outputs ?? {};
+          outcome = await runAttempt(
+            executor,
+            {
+              runId: request.runId,
+              node,
+              attempt,
+              inputs: built.inputs,
+              workflowInput: request.input ?? {},
+              context: request.context ?? {},
+            },
+            request.signal,
+            timers,
+          );
+          if (outcome.kind === "succeeded" || outcome.kind === "cancelled") {
+            break;
+          }
+          if (outcome.kind === "termination-failed") {
+            break;
+          }
+          const retryable = retry ? retry.isRetryable(outcome.cause, attempt) : false;
+          if (!retryable || attempt >= maxAttempts) {
+            break;
+          }
+          const delayMs = Math.max(0, retry?.backoffMs?.(attempt) ?? 0);
+          emit({
+            type: "node.retrying",
+            runId: request.runId,
+            nodeId,
+            attempt,
+            nextAttempt: attempt + 1,
+            delayMs,
+            reason: toErrorMessage(outcome.cause),
+            timestamp: timestamp(),
+          });
+          if (!(await wait(timers, delayMs, request.signal))) {
+            break;
+          }
+        }
+
+        if (outcome?.kind === "succeeded") {
+          const outputs = outcome.result.outputs ?? {};
           nodeResults[nodeId] = {
             status: "succeeded",
-            attempts: 1,
+            attempts: attempt,
             inputs: built.inputs,
             outputs,
           };
@@ -288,33 +382,45 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
             type: "node.succeeded",
             runId: request.runId,
             nodeId,
-            attempt: 1,
+            attempt,
             timestamp: timestamp(),
             outputs,
           });
-        } catch (cause) {
-          const error = fail("node-failed", `Node ${nodeId} failed: ${toErrorMessage(cause)}`, {
-            nodeId,
-            cause,
-          });
-          nodeResults[nodeId] = {
-            status: "failed",
-            attempts: 1,
-            inputs: built.inputs,
-            outputs: {},
-            error,
-          };
-          emit({
-            type: "node.failed",
-            runId: request.runId,
-            nodeId,
-            attempt: 1,
-            timestamp: timestamp(),
-            error,
-          });
-          emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
-          return { status: "failed", error, nodeResults, events };
+          continue;
         }
+
+        const cancelled = outcome?.kind === "cancelled" || request.signal?.aborted === true;
+        const error = describeAttemptFailure(nodeId, attempt, outcome, cancelled, {
+          retryable:
+            outcome !== undefined &&
+            "cause" in outcome &&
+            outcome.kind !== "cancelled" &&
+            retry !== undefined &&
+            attempt >= maxAttempts &&
+            maxAttempts > 1 &&
+            retry.isRetryable(outcome.cause, attempt),
+        });
+        nodeResults[nodeId] = {
+          status: "failed",
+          attempts: attempt,
+          inputs: built.inputs,
+          outputs: {},
+          error,
+        };
+        emit({
+          type: "node.failed",
+          runId: request.runId,
+          nodeId,
+          attempt,
+          timestamp: timestamp(),
+          error,
+        });
+        if (cancelled) {
+          emit({ type: "run.cancelled", runId: request.runId, timestamp: timestamp() });
+          return { status: "cancelled", nodeResults, events };
+        }
+        emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
+        return { status: "failed", error, nodeResults, events };
       }
 
       const output = resolveRunOutput(workflow, nodeResults);

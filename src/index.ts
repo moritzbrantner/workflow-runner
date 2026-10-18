@@ -6,6 +6,9 @@ export type {
   ExecutableWorkflowNode,
   ExecutableWorkflowPort,
   ExecutableWorkflowPortCardinality,
+  WorkflowExecutorPolicy,
+  WorkflowExecutorRegistration,
+  WorkflowExecutorRetryPolicy,
   WorkflowNodeExecutionResult,
   WorkflowNodeExecutor,
   WorkflowNodeExecutorContext,
@@ -16,6 +19,7 @@ export type {
   WorkflowRunResult,
   WorkflowRunner,
   WorkflowRunnerOptions,
+  WorkflowRunnerTimers,
   WorkflowValidationDiagnostic,
   WorkflowValidationDiagnosticCode,
 } from "./types.js";

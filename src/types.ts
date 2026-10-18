@@ -74,9 +74,12 @@ export type WorkflowNodeExecutionResult = {
 export type WorkflowNodeExecutorContext = {
   runId: string;
   node: ExecutableWorkflowNode;
+  /** 1 for the first attempt; increases only when the executor's retry policy permits. */
+  attempt: number;
   inputs: Readonly<Record<string, unknown>>;
   workflowInput: Readonly<Record<string, unknown>>;
   context: Readonly<Record<string, unknown>>;
+  /** Aborted when the run is cancelled or this attempt times out. */
   signal?: AbortSignal;
 };
 
@@ -84,10 +87,60 @@ export type WorkflowNodeExecutor = (
   context: WorkflowNodeExecutorContext,
 ) => WorkflowNodeExecutionResult | Promise<WorkflowNodeExecutionResult>;
 
+/**
+ * Retry policy declared by an executor registration (TECH-005). Without one, an executor runs
+ * exactly once. Another attempt starts only when `isRetryable` classifies the failure as transient,
+ * attempts remain, and the registration declares repeated execution safe with `idempotent: true`.
+ */
+export type WorkflowExecutorRetryPolicy = {
+  /** Total attempts including the first: a finite integer of at least 1. */
+  maxAttempts: number;
+  /** Returns `true` only for transient failures that may be retried. */
+  isRetryable: (error: unknown, attempt: number) => boolean;
+  /** Explicit statement that repeating this executor is safe (idempotent or idempotently keyed). */
+  idempotent: true;
+  /** Delay in milliseconds before the next attempt; defaults to none. */
+  backoffMs?: (attempt: number) => number;
+};
+
+/** Per-executor execution policy (TECH-005, TECH-008). */
+export type WorkflowExecutorPolicy = {
+  retry?: WorkflowExecutorRetryPolicy;
+  /** Finite per-attempt timeout in milliseconds. The attempt's signal is aborted when it elapses. */
+  timeoutMs?: number;
+  /**
+   * Terminates work that does not stop cooperatively, for executors behind a host-owned isolation
+   * boundary (TECH-008). Invoked when an aborted attempt has not settled after `shutdownMs`.
+   */
+  terminate?: (context: WorkflowNodeExecutorContext) => void | Promise<void>;
+  /** Grace period in milliseconds between aborting an attempt and calling `terminate`; default 0. */
+  shutdownMs?: number;
+};
+
+export type WorkflowExecutorRegistration = {
+  execute: WorkflowNodeExecutor;
+  policy: WorkflowExecutorPolicy;
+};
+
+/** Timer seam so timeouts and backoff are testable without wall-clock sleeps. */
+export type WorkflowRunnerTimers = {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+};
+
 export type WorkflowRunError = {
-  code: "invalid-workflow" | "input-not-ready" | "missing-executor" | "node-failed";
+  code:
+    | "invalid-workflow"
+    | "input-not-ready"
+    | "missing-executor"
+    | "node-failed"
+    | "node-timed-out"
+    | "node-cancelled"
+    | "node-termination-failed"
+    | "retries-exhausted";
   message: string;
   nodeId?: string;
+  attempt?: number;
   cause?: unknown;
   diagnostics?: WorkflowValidationDiagnostic[];
 };
@@ -133,6 +186,16 @@ export type WorkflowRunEvent =
       reason: "inactive-inputs";
     }
   | {
+      type: "node.retrying";
+      runId: string;
+      nodeId: string;
+      attempt: number;
+      nextAttempt: number;
+      delayMs: number;
+      reason: string;
+      timestamp: string;
+    }
+  | {
       type: "node.failed";
       runId: string;
       nodeId: string;
@@ -164,11 +227,16 @@ export type WorkflowRunResult =
     };
 
 export type WorkflowRunnerOptions = {
-  executors?: Readonly<Record<string, WorkflowNodeExecutor>>;
+  executors?: Readonly<Record<string, WorkflowNodeExecutor | WorkflowExecutorRegistration>>;
   now?: () => Date;
+  timers?: WorkflowRunnerTimers;
 };
 
 export type WorkflowRunner = {
-  registerExecutor(kind: string, executor: WorkflowNodeExecutor): void;
+  registerExecutor(
+    kind: string,
+    executor: WorkflowNodeExecutor,
+    policy?: WorkflowExecutorPolicy,
+  ): void;
   dispatch(request: WorkflowRunRequest): Promise<WorkflowRunResult>;
 };
