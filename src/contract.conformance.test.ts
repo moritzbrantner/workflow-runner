@@ -17,7 +17,9 @@ test("executes the canonical editor compiled-v1 fixture", async () => {
   });
 
   assert.equal(result.status, "succeeded");
-  if (result.status !== "succeeded") return;
+  if (result.status !== "succeeded") {
+    return;
+  }
 
   assert.deepEqual(result.output, { message: "hello" });
   assert.equal(result.nodeResults.start?.status, "succeeded");

@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "warn"
+  },
+  "rules": {
+    "eslint/no-console": "warn",
+    "eslint/no-debugger": "error",
+    "eslint/no-loss-of-precision": "warn",
+    "eslint/no-shadow": "off",
+    "eslint/no-unmodified-loop-condition": "warn",
+    "eslint/no-useless-escape": "warn",
+    "eslint/no-unused-vars": "warn",
+    "eslint/preserve-caught-error": "warn",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "unicorn/prefer-string-starts-ends-with": "off",
+    "typescript/no-explicit-any": "off"
+  },
+  "ignorePatterns": ["node_modules/**", "dist/**", ".turbo/**", "coverage/**", "test-results/**"]
+}

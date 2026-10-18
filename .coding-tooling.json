@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "profile": "repository-foundation-v1",
+  "tiers": {
+    "fast": ["format:check", "lint", "typecheck", "build", "test:unit"],
+    "full": ["format:check", "lint", "typecheck", "build", "test:unit"]
+  },
+  "requiredCapabilities": ["format:check", "lint", "typecheck", "build", "test:unit"],
+  "capabilityCommands": {
+    "@moritzbrantner/workflow-runner": {
+      "format:check": ["bun", "run", "format:check"],
+      "lint": ["bun", "run", "lint"],
+      "typecheck": ["bun", "run", "check-types"],
+      "build": ["bun", "run", "build"],
+      "test:unit": ["bun", "test"]
+    }
+  }
+}

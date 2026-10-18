@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { createWorkflowRunner, validateExecutableWorkflow, type ExecutableWorkflow } from "./index.js";
+import {
+  createWorkflowRunner,
+  validateExecutableWorkflow,
+  type ExecutableWorkflow,
+} from "./index.js";
 
 /**
  * Copied, exact compiled-v1 fixture from workflow-editor. "ComfyUI" here is
@@ -56,13 +60,18 @@ test("dispatches an opaque external asset operation exactly once with its pinned
 
   assert.equal(run.status, "succeeded");
   assert.equal(dispatches, 1);
-  if (run.status !== "succeeded") return;
+  if (run.status !== "succeeded") {
+    return;
+  }
   assert.deepEqual(run.output, outputAsset);
   assert.deepEqual(run.nodeResults.generate?.outputs, { asset: outputAsset });
   assert.equal(run.nodeResults.generate?.attempts, 1);
   assert.deepEqual(
     run.events
-      .filter((event) => event.type.startsWith("node.") && "nodeId" in event && event.nodeId === "generate")
+      .filter(
+        (event) =>
+          event.type.startsWith("node.") && "nodeId" in event && event.nodeId === "generate",
+      )
       .map((event) => event.type),
     ["node.started", "node.succeeded"],
   );

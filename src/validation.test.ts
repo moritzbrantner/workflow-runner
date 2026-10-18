@@ -45,10 +45,14 @@ test("rejects malformed runtime values before invoking an executor", async () =>
     return;
   }
   assert.equal(result.error.code, "invalid-workflow");
-  assert.deepEqual(result.error.diagnostics?.map(({ code, path }) => ({ code, path })), [
-    { code: "invalid-shape", path: "nodes" },
-  ]);
-  assert.deepEqual(result.events.map((event) => event.type), ["run.failed"]);
+  assert.deepEqual(
+    result.error.diagnostics?.map(({ code, path }) => ({ code, path })),
+    [{ code: "invalid-shape", path: "nodes" }],
+  );
+  assert.deepEqual(
+    result.events.map((event) => event.type),
+    ["run.failed"],
+  );
 });
 
 test("requires opaque compiled port type metadata without interpreting it", () => {
@@ -101,10 +105,18 @@ test("reports deterministic structural and graph diagnostics", () => {
       { code: "missing-port", path: "edges[1].targetPortId" },
       { code: "invalid-order", path: "edges[0]" },
     ].sort((left, right) => {
-      if (left.path < right.path) return -1;
-      if (left.path > right.path) return 1;
-      if (left.code < right.code) return -1;
-      if (left.code > right.code) return 1;
+      if (left.path < right.path) {
+        return -1;
+      }
+      if (left.path > right.path) {
+        return 1;
+      }
+      if (left.code < right.code) {
+        return -1;
+      }
+      if (left.code > right.code) {
+        return 1;
+      }
       return 0;
     }),
   );
