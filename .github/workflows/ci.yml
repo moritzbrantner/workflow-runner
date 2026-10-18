@@ -10,8 +10,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
       - run: bun install
       - run: bun run verify
+      - name: Check changed static site
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          if echo "$changed_paths" | rg -q '^(web/|\.github/workflows/(pages|ci)\.yml$)'; then
+            test -f web/index.html
+            test -f web/styles.css
+            test -f web/app.js
+            node --check web/app.js
+          fi
+
+  merge-ready:
+    name: merge-ready
+    if: ${{ always() }}
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: moritzbrantner/reusable-workflows/.github/actions/merge-ready@b0f25f241d76af2584dfc9e375084ff5c5cb97da
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: '["verify"]'
