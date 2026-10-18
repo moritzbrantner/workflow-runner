@@ -67,3 +67,21 @@ runner.registerExecutor("model.infer", inferExecutor, {
 - Failures are classified as `node-failed` (permanent), `retries-exhausted`, `node-timed-out`, `node-cancelled` (the run then ends `cancelled`, and no further attempt starts) or `node-termination-failed`.
 - Interrupted attempts are never abandoned: the runner waits for the executor to settle. Executors that cannot stop cooperatively must sit behind a host-owned isolation boundary and declare `terminate` (with an optional `shutdownMs` grace period), which the runner calls when an aborted attempt keeps running (TECH-008). Terminating local work does not undo remote side effects.
 - Timeouts and backoff use the injectable `timers` option, so tests need no wall-clock sleeps.
+
+## Suspending and resuming a run
+
+An executor can pause the run at a waiting step, such as a human approval or a typed input task, by returning `{ suspend: { taskId, request? } }`. The run then ends with `status: "suspended"` and a JSON-safe `checkpoint` (`@moritzbrantner/workflow-runner/checkpoint` version 1). The checkpoint contains:
+
+- the run ID;
+- the `sha256` digest of the canonical compiled workflow;
+- the waiting node, task and attempt;
+- the completed node results.
+
+The host or engine stores the checkpoint durably (Engine TECH-001). To continue the same run, dispatch it again with `resume: { checkpoint, response }`:
+
+- Completed nodes are restored and never executed again.
+- The waiting node's executor receives `context.resume` (`taskId`, `request` and `response`) and produces its outputs, for example an `approved` or `rejected` branch.
+- Execution then continues as normal.
+- A checkpoint for another run ID or a different compiled workflow fails with `invalid-checkpoint` before any executor runs.
+
+The runner defines no human-task node kinds. Those come from the compiled contract in Workflow Editor #105, implemented by host-registered executors.
