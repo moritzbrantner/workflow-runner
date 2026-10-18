@@ -24,7 +24,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          changed_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA")
           if echo "$changed_paths" | rg -q '^(web/|\.github/workflows/(pages|ci)\.yml$)'; then
             test -f web/index.html
             test -f web/styles.css
