@@ -161,3 +161,19 @@ To run selected nodes again, dispatch a new run with `rerun: { evidence, nodeIds
 `dispatch({ ..., onEvent })` calls the observer synchronously with each lifecycle event as it happens, for example `node.started` while an external operation is still running. The run still returns the complete `events` array, so callers without an observer are unaffected. An observer that throws never changes execution.
 
 Event payloads summarize streams and raw bytes. Hosts that keep observed events should still bound what they retain. Workflow Engine's adapter can forward events by passing its dispatch observer through: `runner.dispatch({ ...request, onEvent: observer?.onEvent })`.
+
+## Persisting results on completion
+
+A compiled node with `persistence: "on-completion"` (workflow-editor TECH-011, editor PR #121) asks for its completed result to be stored immediately, not only with the terminal run result. Pass `persistNodeResult(record)` to `dispatch`. For each opted-in node, the runner sends a JSON-safe `WorkflowNodeResultRecord`:
+
+- the run ID, workflow digest and input digest;
+- the node ID and attempt;
+- the iteration scope, for nodes inside an iteration body;
+- the succeeded result.
+
+The runner then behaves as follows:
+
+- **Acknowledgment first:** the runner awaits the acknowledgment before the node counts as completed. Downstream nodes only start once the write is acknowledged, and a `node.persisted` event follows.
+- **Failed or impossible write:** a rejected write, or a result that isn't JSON-safe, fails the node with `persistence-failed`, and it is never reported durable.
+- **No handler:** without a handler, or for nodes without the setting, behaviour is unchanged.
+- **After a lost run:** if a run is lost before terminal persistence, `createWorkflowRunEvidenceFromRecords(records)` rebuilds rerun evidence from the acknowledged top-level records. Those results are reused by a selective rerun and are not executed again.
