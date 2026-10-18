@@ -1,0 +1,237 @@
+{
+  "format": "@moritzbrantner/workflow/compiled",
+  "version": 3,
+  "nodes": [
+    {
+      "id": "start",
+      "label": "Start",
+      "kind": "control.start",
+      "outputs": [
+        {
+          "id": "n",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ]
+    },
+    {
+      "id": "loop",
+      "label": "Repeat",
+      "kind": "control.iterate",
+      "inputs": [
+        {
+          "id": "state",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "id": "result",
+          "type": {
+            "kind": "typescript",
+            "source": "{ status: \"converged\"; value: number; iterations: number; maxIterations: number } | { status: \"limit-exhausted\"; value: number; iterations: number; maxIterations: number }"
+          }
+        }
+      ],
+      "iteration": {
+        "maxIterations": 3,
+        "state": {
+          "inputPortId": "state",
+          "type": {
+            "kind": "typescript",
+            "source": "number"
+          }
+        },
+        "stop": {
+          "kind": "limit-only"
+        },
+        "candidate": "latest-state",
+        "result": {
+          "outputPortId": "result",
+          "statuses": ["converged", "limit-exhausted"]
+        },
+        "body": {
+          "nodes": [
+            {
+              "id": "call",
+              "label": "Call child",
+              "kind": "workflow.call",
+              "inputs": [
+                {
+                  "id": "n",
+                  "type": {
+                    "kind": "typescript",
+                    "source": "number"
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "id": "result",
+                  "type": {
+                    "kind": "typescript",
+                    "source": "number"
+                  }
+                }
+              ],
+              "workflowRef": {
+                "workflow": "child@1"
+              }
+            }
+          ],
+          "edges": [],
+          "order": ["call"],
+          "inputs": [
+            {
+              "id": "state",
+              "nodeId": "call",
+              "portId": "n"
+            }
+          ],
+          "outputs": {
+            "next": {
+              "nodeId": "call",
+              "portId": "result"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "end",
+      "label": "End",
+      "kind": "control.end",
+      "inputs": [
+        {
+          "id": "result",
+          "type": {
+            "kind": "typescript",
+            "source": "unknown"
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "loop.result-end.result",
+      "sourceNodeId": "loop",
+      "sourcePortId": "result",
+      "targetNodeId": "end",
+      "targetPortId": "result"
+    },
+    {
+      "id": "start.n-loop.state",
+      "sourceNodeId": "start",
+      "sourcePortId": "n",
+      "targetNodeId": "loop",
+      "targetPortId": "state"
+    }
+  ],
+  "order": ["start", "loop", "end"],
+  "workflows": {
+    "child@1": {
+      "id": "child",
+      "version": 1,
+      "nodes": [
+        {
+          "id": "start",
+          "label": "Start",
+          "kind": "control.start",
+          "outputs": [
+            {
+              "id": "n",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ]
+        },
+        {
+          "id": "double",
+          "label": "Double",
+          "kind": "math.double",
+          "inputs": [
+            {
+              "id": "in",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ],
+          "outputs": [
+            {
+              "id": "out",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ]
+        },
+        {
+          "id": "end",
+          "label": "End",
+          "kind": "control.end",
+          "inputs": [
+            {
+              "id": "result",
+              "type": {
+                "kind": "typescript",
+                "source": "number"
+              }
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "double.out-end.result",
+          "sourceNodeId": "double",
+          "sourcePortId": "out",
+          "targetNodeId": "end",
+          "targetPortId": "result"
+        },
+        {
+          "id": "start.n-double.in",
+          "sourceNodeId": "start",
+          "sourcePortId": "n",
+          "targetNodeId": "double",
+          "targetPortId": "in"
+        }
+      ],
+      "order": ["start", "double", "end"],
+      "interface": {
+        "inputs": [
+          {
+            "id": "n",
+            "nodeId": "start",
+            "portId": "n",
+            "type": {
+              "kind": "typescript",
+              "source": "number"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "nodeId": "end",
+            "portId": "result",
+            "type": {
+              "kind": "typescript",
+              "source": "number"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
