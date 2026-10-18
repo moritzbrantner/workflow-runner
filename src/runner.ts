@@ -7,6 +7,7 @@ import {
 } from "./attempts.js";
 import { createBuiltInExecutors } from "./builtins.js";
 import { digestExecutableWorkflow, findCheckpointProblem } from "./checkpoint.js";
+import { planRerun } from "./evidence.js";
 import { isAsyncIterable, StreamBroadcast, summarizeOutputs } from "./stream.js";
 import {
   type ExecutableWorkflow,
@@ -296,6 +297,23 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       });
     } else {
       emit({ type: "run.started", runId: request.runId, maxWorkers, timestamp: timestamp() });
+    }
+    if (request.rerun && !resume) {
+      const plan = planRerun(request.rerun, workflow, request);
+      if ("problem" in plan) {
+        const error = fail("invalid-rerun", plan.problem);
+        emit({ type: "run.failed", runId: request.runId, timestamp: timestamp(), error });
+        return { status: "failed", error, nodeResults, events };
+      }
+      Object.assign(nodeResults, plan.reused);
+      emit({
+        type: "run.rerun",
+        runId: request.runId,
+        fromRunId: request.rerun.evidence.runId,
+        reusedNodeIds: Object.keys(plan.reused),
+        rerunNodeIds: plan.rerunNodeIds,
+        timestamp: timestamp(),
+      });
     }
 
     if (shared.seed) {

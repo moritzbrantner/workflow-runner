@@ -139,3 +139,19 @@ Compiled ports may declare `payload: { mode: "buffered" | "streamed", mediaType?
 - **Rejected before execution:** connecting a buffered port to a streamed one fails with `payload-mode-mismatch`.
 - **Missing stream:** a streamed output that is not an async iterable fails with `invalid-stream-output`.
 - **JSON-safe events:** lifecycle events summarize streams and raw bytes as `{ payload: "stream" }` and `{ payload: "binary", byteLength }`, so engine run records never receive bytes or live streams.
+
+## Selective reruns
+
+`createWorkflowRunEvidence(request, result)` turns any finished run into JSON-safe evidence for the host or engine to store with the run (TECH-011 terminal persistence). Evidence holds:
+
+- the workflow digest;
+- a digest of the run's `{ input, context }`;
+- succeeded and skipped node results whose inputs and outputs are JSON-safe. Streams and raw bytes are never recorded as reusable.
+
+To run selected nodes again, dispatch a new run with `rerun: { evidence, nodeIds }`:
+
+- The selected nodes and everything downstream of them execute again.
+- Other recorded results are reused, so completed external work is not repeated.
+- Any node without a recorded result runs normally.
+- A `run.rerun` event lists the reused and re-executed nodes.
+- Evidence from a different workflow version, or for a different input or context, fails with `invalid-rerun` before any executor runs. Stale results are never reused.
