@@ -24,8 +24,12 @@ export function createBuiltInExecutors(): Record<string, WorkflowNodeExecutor> {
         ? { match: inputs.value }
         : { default: inputs.value },
     }),
+    // Editor documents declare one multi-source `items` input, aggregated in compiled edge-id
+    // order; legacy `a`/`b` merges pass the first active value through.
     "control.merge": ({ inputs }) => ({
-      outputs: { out: hasOwn(inputs, "a") ? inputs.a : inputs.b },
+      outputs: {
+        out: hasOwn(inputs, "items") ? inputs.items : hasOwn(inputs, "a") ? inputs.a : inputs.b,
+      },
     }),
     "json.string": ({ node }) => ({ outputs: { value: node.data?.value ?? "" } }),
     "json.number": ({ node }) => ({ outputs: { value: node.data?.value ?? 0 } }),
