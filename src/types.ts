@@ -11,6 +11,30 @@ export type ExecutableWorkflowPort = {
   cardinality?: ExecutableWorkflowPortCardinality;
 };
 
+export type ExecutableWorkflowIterationBoundary = { nodeId: string; portId: string };
+
+/**
+ * A bounded loop from workflow-editor compiled version 2 (docs/compiler.md). The body runs at most
+ * `maxIterations` times; each `next` output becomes the following `state`.
+ */
+export type ExecutableWorkflowIteration = {
+  maxIterations: number;
+  state: { inputPortId: "state"; type?: unknown };
+  stop: { kind: "body-output"; outputId: "converged" } | { kind: "limit-only" };
+  candidate: "latest-state";
+  result: { outputPortId: string; statuses: string[] };
+  body: {
+    nodes: ExecutableWorkflowNode[];
+    edges: ExecutableWorkflowEdge[];
+    order: string[];
+    inputs: Array<ExecutableWorkflowIterationBoundary & { id: string }>;
+    outputs: {
+      next: ExecutableWorkflowIterationBoundary;
+      converged?: ExecutableWorkflowIterationBoundary;
+    };
+  };
+};
+
 export type ExecutableWorkflowNode = {
   id: string;
   label?: string;
@@ -18,6 +42,8 @@ export type ExecutableWorkflowNode = {
   inputs?: ExecutableWorkflowPort[];
   outputs?: ExecutableWorkflowPort[];
   data?: Record<string, unknown>;
+  /** Compiled-v2 bounded iteration (`control.iterate`). */
+  iteration?: ExecutableWorkflowIteration;
 };
 
 export type ExecutableWorkflowEdge = {
@@ -30,7 +56,8 @@ export type ExecutableWorkflowEdge = {
 
 export type ExecutableWorkflow = {
   format: "@moritzbrantner/workflow/compiled";
-  version: 1;
+  /** 1 for plain DAGs; 2 when the workflow contains bounded iteration. */
+  version: 1 | 2;
   nodes: ExecutableWorkflowNode[];
   edges: ExecutableWorkflowEdge[];
   order: string[];
@@ -40,6 +67,8 @@ export type WorkflowValidationDiagnosticCode =
   | "invalid-shape"
   | "unsupported-format"
   | "unsupported-version"
+  | "invalid-iteration"
+  | "nested-iteration-not-supported"
   | "duplicate-node-id"
   | "duplicate-edge-id"
   | "duplicate-port-id"
@@ -67,6 +96,11 @@ export type WorkflowRunRequest = {
   signal?: AbortSignal;
   /** Simultaneous node executions for this run; overrides the runner default (TECH-012). */
   maxWorkers?: number;
+  /**
+   * Run-wide budget of node execution attempts, counting retries and nested iteration work
+   * (TECH-006/007). Overrides the runner option; without either, attempts are unbudgeted.
+   */
+  maxNodeAttempts?: number;
   /** Continues a suspended run from its checkpoint, delivering the waiting task's response. */
   resume?: WorkflowRunResume;
 };
@@ -172,6 +206,8 @@ export type WorkflowRunError = {
     | "invalid-workflow"
     | "invalid-checkpoint"
     | "invalid-run-options"
+    | "budget-exhausted"
+    | "iteration-no-result"
     | "input-not-ready"
     | "missing-executor"
     | "node-failed"
@@ -248,6 +284,14 @@ export type WorkflowRunEvent =
   | { type: "run.failed"; runId: string; timestamp: string; error: WorkflowRunError }
   | { type: "run.cancelled"; runId: string; timestamp: string }
   | {
+      type: "node.iteration";
+      runId: string;
+      nodeId: string;
+      iteration: number;
+      converged: boolean;
+      timestamp: string;
+    }
+  | {
       type: "run.resumed";
       runId: string;
       nodeId: string;
@@ -296,6 +340,8 @@ export type WorkflowRunnerOptions = {
   timers?: WorkflowRunnerTimers;
   /** Default simultaneous node executions per run; a positive whole number (default 4). */
   maxWorkers?: number;
+  /** Default run-wide node attempt budget; unbudgeted when omitted. */
+  maxNodeAttempts?: number;
 };
 
 export type WorkflowRunner = {

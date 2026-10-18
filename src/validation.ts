@@ -9,6 +9,8 @@ import type {
 
 const compiledFormat = "@moritzbrantner/workflow/compiled";
 const compiledVersion = 1;
+/** Compiled version that adds bounded iteration (`control.iterate`). */
+const compiledIterationVersion = 2;
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -506,6 +508,152 @@ function validateSemantics(workflow: ExecutableWorkflow): WorkflowValidationDiag
   return diagnostics;
 }
 
+/** Structural checks for the compiled-v2 bounded iteration construct. */
+function validateIteration(
+  node: Record<string, unknown>,
+  path: string,
+  version: unknown,
+  diagnostics: WorkflowValidationDiagnostic[],
+): void {
+  const nodeId = typeof node.id === "string" ? node.id : undefined;
+  const invalid = (suffix: string, message: string) =>
+    diagnostics.push({
+      code: "invalid-iteration",
+      path: `${path}${suffix}`,
+      message,
+      ...(nodeId ? { nodeId } : {}),
+    });
+  if (node.iteration === undefined) {
+    // An opaque control.iterate kind without the construct stays an ordinary host executor node.
+    return;
+  }
+  if (version !== compiledIterationVersion) {
+    invalid(".iteration", "Bounded iteration requires compiled workflow version 2.");
+    return;
+  }
+  if (node.kind !== "control.iterate") {
+    invalid(".kind", "Only control.iterate nodes may declare an iteration.");
+    return;
+  }
+  const iteration = node.iteration;
+  if (!isRecord(iteration)) {
+    invalid(".iteration", "Iteration must be an object.");
+    return;
+  }
+  const max = iteration.maxIterations;
+  if (typeof max !== "number" || !Number.isInteger(max) || max < 1) {
+    invalid(
+      ".iteration.maxIterations",
+      "Iteration requires a whole-number maxIterations of at least 1.",
+    );
+  }
+  const inputIds = new Set(
+    (Array.isArray(node.inputs) ? node.inputs : []).flatMap((port) =>
+      isRecord(port) && typeof port.id === "string" ? [port.id] : [],
+    ),
+  );
+  const outputIds = new Set(
+    (Array.isArray(node.outputs) ? node.outputs : []).flatMap((port) =>
+      isRecord(port) && typeof port.id === "string" ? [port.id] : [],
+    ),
+  );
+  if (
+    !isRecord(iteration.state) ||
+    iteration.state.inputPortId !== "state" ||
+    !inputIds.has("state")
+  ) {
+    invalid(".iteration.state", "Iteration state must use the node's 'state' input port.");
+  }
+  const stop = iteration.stop;
+  const bodyOutputStop =
+    isRecord(stop) && stop.kind === "body-output" && stop.outputId === "converged";
+  if (!bodyOutputStop && !(isRecord(stop) && stop.kind === "limit-only")) {
+    invalid(".iteration.stop", "Iteration stop must be body-output 'converged' or limit-only.");
+  }
+  if (iteration.candidate !== "latest-state") {
+    invalid(".iteration.candidate", "Iteration candidate must be 'latest-state'.");
+  }
+  if (
+    !isRecord(iteration.result) ||
+    !nonEmptyString(iteration.result.outputPortId) ||
+    !outputIds.has(iteration.result.outputPortId)
+  ) {
+    invalid(".iteration.result", "Iteration result must name an output port of the node.");
+  }
+  const body = iteration.body;
+  if (!isRecord(body)) {
+    invalid(".iteration.body", "Iteration requires a body graph.");
+    return;
+  }
+  const bodyPath = `${path}.iteration.body.`;
+  for (const bodyDiagnostic of validateExecutableWorkflow({
+    format: compiledFormat,
+    version: compiledVersion,
+    nodes: body.nodes,
+    edges: body.edges,
+    order: body.order,
+  })) {
+    diagnostics.push({
+      ...bodyDiagnostic,
+      ...(bodyDiagnostic.code === "invalid-iteration"
+        ? {
+            code: "nested-iteration-not-supported",
+            message: "An iteration cannot be nested inside an iteration body.",
+          }
+        : {}),
+      path: `${bodyPath}${bodyDiagnostic.path}`,
+    });
+  }
+  const bodyPorts = new Map<string, { inputs: Set<string>; outputs: Set<string> }>();
+  for (const bodyNode of Array.isArray(body.nodes) ? body.nodes : []) {
+    if (isRecord(bodyNode) && typeof bodyNode.id === "string") {
+      const ids = (ports: unknown) =>
+        new Set(
+          (Array.isArray(ports) ? ports : []).flatMap((port) =>
+            isRecord(port) && typeof port.id === "string" ? [port.id] : [],
+          ),
+        );
+      bodyPorts.set(bodyNode.id, { inputs: ids(bodyNode.inputs), outputs: ids(bodyNode.outputs) });
+    }
+  }
+  const boundary = (value: unknown, suffix: string, direction: "inputs" | "outputs") => {
+    const ports =
+      isRecord(value) && typeof value.nodeId === "string" ? bodyPorts.get(value.nodeId) : undefined;
+    if (
+      !isRecord(value) ||
+      typeof value.portId !== "string" ||
+      !ports?.[direction].has(value.portId)
+    ) {
+      invalid(
+        suffix,
+        `Iteration boundary must reference an existing body ${direction === "inputs" ? "input" : "output"} port.`,
+      );
+    }
+  };
+  if (!Array.isArray(body.inputs)) {
+    invalid(".iteration.body.inputs", "Iteration body inputs must be an array.");
+  } else {
+    body.inputs.forEach((input, index) => {
+      const suffix = `.iteration.body.inputs[${index}]`;
+      boundary(input, suffix, "inputs");
+      if (!isRecord(input) || typeof input.id !== "string" || !inputIds.has(input.id)) {
+        invalid(
+          `${suffix}.id`,
+          "Iteration body input must name an input port of the iteration node.",
+        );
+      }
+    });
+  }
+  if (!isRecord(body.outputs)) {
+    invalid(".iteration.body.outputs", "Iteration body outputs must be an object.");
+    return;
+  }
+  boundary(body.outputs.next, ".iteration.body.outputs.next", "outputs");
+  if (bodyOutputStop || body.outputs.converged !== undefined) {
+    boundary(body.outputs.converged, ".iteration.body.outputs.converged", "outputs");
+  }
+}
+
 export function validateExecutableWorkflow(value: unknown): WorkflowValidationDiagnostic[] {
   const diagnostics: WorkflowValidationDiagnostic[] = [];
   if (!isRecord(value)) {
@@ -525,7 +673,7 @@ export function validateExecutableWorkflow(value: unknown): WorkflowValidationDi
       message: `Unsupported compiled workflow format ${String(value.format)}.`,
     });
   }
-  if (value.version !== compiledVersion) {
+  if (value.version !== compiledVersion && value.version !== compiledIterationVersion) {
     diagnostics.push({
       code: "unsupported-version",
       path: "version",
@@ -536,13 +684,24 @@ export function validateExecutableWorkflow(value: unknown): WorkflowValidationDi
   const nodes = validateNodes(value.nodes, diagnostics);
   const edges = validateEdges(value.edges, diagnostics);
   const order = validateOrder(value.order, diagnostics);
+  if (Array.isArray(value.nodes)) {
+    value.nodes.forEach((rawNode, index) => {
+      if (
+        isRecord(rawNode) &&
+        (rawNode.kind === "control.iterate" || rawNode.iteration !== undefined)
+      ) {
+        validateIteration(rawNode, `nodes[${index}]`, value.version, diagnostics);
+      }
+    });
+  }
   if (diagnostics.length > 0 || nodes === null || edges === null || order === null) {
     return diagnostics;
   }
 
   const workflow: ExecutableWorkflow = {
     format: compiledFormat,
-    version: compiledVersion,
+    version:
+      value.version === compiledIterationVersion ? compiledIterationVersion : compiledVersion,
     nodes,
     edges,
     order,
