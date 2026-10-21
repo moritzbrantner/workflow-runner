@@ -25,13 +25,7 @@ body {
     radial-gradient(circle at 85% 10%, rgba(196, 181, 253, 0.09), transparent 24rem), var(--bg);
   color: var(--text);
   font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 main {
   width: min(1180px, calc(100% - 32px));
