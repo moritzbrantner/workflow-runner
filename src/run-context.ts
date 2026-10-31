@@ -44,6 +44,8 @@ export type RunContext = {
   runSignal: AbortSignal;
   emit: (event: WorkflowRunEvent) => void;
   timestamp: () => string;
+  /** Digest of this run's compiled workflow, which is immutable, computed at most once. */
+  workflowDigest: () => string;
   /** Runs a nested graph under this runner (iteration bodies and Workflow References). */
   runNested: (request: WorkflowRunRequest, shared: SharedRunState) => Promise<WorkflowRunResult>;
 };

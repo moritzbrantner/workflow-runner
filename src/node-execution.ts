@@ -1,5 +1,4 @@
 import { runAttempt, wait, type AttemptOutcome } from "./attempts.js";
-import { digestExecutableWorkflow } from "./checkpoint.js";
 import { isJsonSafeValue, runInputDigest, workflowNodeResultRecordFormat } from "./evidence.js";
 import { type NodeOutcome, recordNodeFailure, type RunContext } from "./run-context.js";
 import { describeAttemptFailure, fail, toErrorCause, toErrorMessage } from "./run-errors.js";
@@ -14,7 +13,7 @@ import type {
 
 /** Hands an opted-in node's result to host persistence and awaits the acknowledgment. */
 export async function persistIfRequested(
-  { request, workflow, shared, emit, timestamp }: RunContext,
+  { request, shared, emit, timestamp, workflowDigest }: RunContext,
   node: ExecutableWorkflowNode,
   result: Extract<WorkflowNodeResult, { status: "succeeded" }>,
 ): Promise<WorkflowRunError | undefined> {
@@ -22,7 +21,7 @@ export async function persistIfRequested(
     return undefined;
   }
   const identity = shared.persistence ?? {
-    workflowDigest: digestExecutableWorkflow(workflow),
+    workflowDigest: workflowDigest(),
     inputDigest: runInputDigest(request),
   };
   if (!isJsonSafeValue(result.inputs) || !isJsonSafeValue(result.outputs)) {

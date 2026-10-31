@@ -1,4 +1,3 @@
-import { digestExecutableWorkflow } from "./checkpoint.js";
 import { runInputDigest } from "./evidence.js";
 import { hasOwn } from "./node-data.js";
 import { persistIfRequested } from "./node-execution.js";
@@ -82,7 +81,7 @@ export async function executeReference(
       callStack: [...callStack, reference.workflow],
       seed,
       persistence: shared.persistence ?? {
-        workflowDigest: digestExecutableWorkflow(workflow),
+        workflowDigest: context.workflowDigest(),
         inputDigest: runInputDigest(request),
       },
     },

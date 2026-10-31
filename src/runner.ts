@@ -152,6 +152,8 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
     }
     request.signal?.addEventListener("abort", onCallerAbort, { once: true });
     const runSignal = runController.signal;
+    let cachedWorkflowDigest: string | undefined;
+    const workflowDigest = () => (cachedWorkflowDigest ??= digestExecutableWorkflow(workflow));
     const context: RunContext = {
       request,
       workflow,
@@ -162,6 +164,7 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
       runSignal,
       emit,
       timestamp,
+      workflowDigest,
       runNested: run,
     };
     const streams = new RunStreams(workflow, incomingByNodeId, streamCapacity, runSignal);
@@ -204,7 +207,7 @@ export function createWorkflowRunner(options: WorkflowRunnerOptions = {}): Workf
         format: workflowRunCheckpointFormat,
         version: 1,
         runId: request.runId,
-        workflowDigest: digestExecutableWorkflow(workflow),
+        workflowDigest: workflowDigest(),
         waiting: stop.waiting,
         completed,
       };

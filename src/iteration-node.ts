@@ -1,4 +1,3 @@
-import { digestExecutableWorkflow } from "./checkpoint.js";
 import { runInputDigest } from "./evidence.js";
 import { hasOwn } from "./node-data.js";
 import { persistIfRequested } from "./node-execution.js";
@@ -79,7 +78,7 @@ export async function executeIteration(
       ...(shared.workflows ? { workflows: shared.workflows } : {}),
       ...(shared.callStack ? { callStack: shared.callStack } : {}),
       persistence: {
-        workflowDigest: shared.persistence?.workflowDigest ?? digestExecutableWorkflow(workflow),
+        workflowDigest: shared.persistence?.workflowDigest ?? context.workflowDigest(),
         inputDigest: shared.persistence?.inputDigest ?? runInputDigest(request),
         iteration: { nodeId, iteration: iterations + 1 },
       },

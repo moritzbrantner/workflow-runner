@@ -23,7 +23,8 @@ type SettledNode = { nodeId: string; outcome: NodeOutcome };
 /** Decides which nodes of one graph run start, and when the run stops. */
 export class RunScheduler {
   stop: RunStop | undefined;
-  private readonly pending: string[];
+  /** Unstarted nodes in compiled order; `Set` keeps insertion order across deletes. */
+  private readonly pending: Set<string>;
   private readonly running = new Map<string, Promise<SettledNode>>();
   private readonly nodeById: ReadonlyMap<string, ExecutableWorkflowNode>;
 
@@ -36,7 +37,7 @@ export class RunScheduler {
   ) {
     const { workflow, nodeResults } = context;
     this.nodeById = new Map(workflow.nodes.map((node) => [node.id, node] as const));
-    this.pending = workflow.order.filter((nodeId) => !nodeResults[nodeId]);
+    this.pending = new Set(workflow.order.filter((nodeId) => !nodeResults[nodeId]));
   }
 
   /** Starts whatever can start; returns false once nothing is left in flight. */
@@ -47,12 +48,12 @@ export class RunScheduler {
     }
     if (!this.stop) {
       this.launchReadyNodes();
-      if (!this.stop && this.running.size === 0 && this.pending.length > 0) {
+      if (!this.stop && this.running.size === 0 && this.pending.size > 0) {
         this.stop = {
           kind: "failed",
           error: fail(
             "stream-deadlock",
-            `Nodes ${this.pending.join(", ")} can never start: their stream consumers cannot run together.`,
+            `Nodes ${[...this.pending].join(", ")} can never start: their stream consumers cannot run together.`,
           ),
         };
       }
@@ -95,7 +96,7 @@ export class RunScheduler {
   private launchNode(nodeId: string): boolean {
     const { context, streams, pending, running } = this;
     const { request, nodeResults, emit, timestamp } = context;
-    pending.splice(pending.indexOf(nodeId), 1);
+    pending.delete(nodeId);
     const node = this.nodeById.get(nodeId);
     if (!node) {
       throw new Error(`Validated workflow is missing node ${nodeId}.`);
@@ -173,12 +174,13 @@ export class RunScheduler {
         continue;
       }
       for (const sibling of this.streams.siblings(edge)) {
-        if (this.pending.includes(sibling.targetNodeId)) {
+        if (this.pending.has(sibling.targetNodeId)) {
           group.add(sibling.targetNodeId);
         }
       }
     }
-    return this.context.workflow.order.filter((id) => group.has(id));
+    // Most nodes consume no stream; only a real group needs sorting into compiled order.
+    return group.size === 1 ? [nodeId] : this.context.workflow.order.filter((id) => group.has(id));
   }
 
   /** Launches ready nodes in compiled order, up to this run's worker limit (TECH-012). */
@@ -188,11 +190,12 @@ export class RunScheduler {
     let progressed = true;
     while (progressed && !this.stop) {
       progressed = false;
-      for (const nodeId of pending.slice()) {
+      // Iterating the live set skips members a stream group already launched in this pass.
+      for (const nodeId of pending) {
         if (this.stop || running.size >= maxWorkers) {
           return;
         }
-        if (!pending.includes(nodeId) || !this.isReady(nodeId)) {
+        if (!this.isReady(nodeId)) {
           continue;
         }
         const group = this.streamGroup(nodeId);

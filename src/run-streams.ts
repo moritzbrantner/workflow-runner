@@ -24,7 +24,9 @@ export class RunStreams {
   ) {
     for (const edge of workflow.edges) {
       const key = streamKey(edge.sourceNodeId, edge.sourcePortId);
-      this.outgoingByPort.set(key, [...(this.outgoingByPort.get(key) ?? []), edge]);
+      const outgoing = this.outgoingByPort.get(key) ?? [];
+      outgoing.push(edge);
+      this.outgoingByPort.set(key, outgoing);
     }
     // Stopping the run (cancellation or failure) ends every stream it owns.
     runSignal.addEventListener("abort", () => this.releaseEverything(), { once: true });
