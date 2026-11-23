@@ -29,11 +29,13 @@
 
 ## GIT-006 — Agents integrate their own green changes
 
-- Agents work on a branch named `agent/<short-topic>`, never directly on the default branch.
-- Open a pull request and merge it with a merge commit, deleting the branch, once all repository checks are green.
-- Agents may also review and merge dependency-update, other-agent, and owner pull requests once reviewed and green.
-- Never weaken, skip, or delete a failing check to reach green.
-- Exception: a repository's `AGENTS.md` may require human approval before merge.
+- Executable implementation changes use a branch named `agent/<short-topic>`; open a PR and merge only after applicable repository checks pass.
+- Owner-approved, **non-executable documentation-only** decisions, plans and instructions may instead be committed directly to the owning default branch when permitted, without requiring a PR or green CI. For an existing documentation-only PR, review its actual content and merge promptly even if unrelated CI is missing or failing.
+- Inspect current authority and Git state before integrating; preserve document syntax, decision IDs and required human review. Do not bypass branch protection or conflate owner approval with implemented behavior.
+- File extension alone is not sufficient: changes to code, configuration, executable specifications/fixtures, generated build inputs, validation contracts or security enforcement retain their applicable tests, reviews and merge gates even when expressed in Markdown.
+- Agents may review and merge dependency-update, other-agent, and owner implementation PRs once applicable checks and obligations pass. Never weaken, skip, or delete a failing check to reach green.
+- For an approved, non-draft PR that is ready for integration, explicitly request GitHub auto-merge or submit it to the configured merge queue (`gh pr merge` on queue-protected branches); opening the PR or enabling auto-merge at repository level does not enqueue it. If requirements are still pending, request merge-when-ready and let GitHub enforce them. Do not queue drafts, blocked/dependent work, PRs awaiting required human approval, or PRs whose integration was explicitly deferred. Verify current head, required checks, reviews, dependencies, and mergeability immediately before requesting merge; do not bypass protections.
+- A repository's `AGENTS.md` may require additional human approval or narrower integration policy.
 
 ## GIT-007 — Commit in small, focused steps
 
